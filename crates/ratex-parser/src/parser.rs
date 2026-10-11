@@ -535,7 +535,7 @@ impl<'a> Parser<'a> {
             }
 
             self.gullet.begin_group();
-            let result = (|| {
+            let result: ParseResult<_> = (|| {
                 let expression = if depth_already_counted {
                     self.parse_expression_impl(false, Some(group_end))?
                 } else {
@@ -967,7 +967,7 @@ impl<'a> Parser<'a> {
         }
 
         self.gullet.begin_group();
-        let result = (|| {
+        let result: ParseResult<_> = (|| {
             let expression = self.parse_expression(false, Some("EOF"))?;
             self.expect("EOF", true)?;
             Ok(expression)

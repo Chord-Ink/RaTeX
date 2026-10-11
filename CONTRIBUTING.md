@@ -66,6 +66,13 @@ Ink score for that suite:
 cargo test -p ratex-render golden_mhchem_smoke -- --nocapture
 ```
 
+## Macro allocation safety
+
+Macro and mhchem builders share cumulative allocation limits. See
+[`docs/EXPANSION_RESOURCE_LIMITS.md`](docs/EXPANSION_RESOURCE_LIMITS.md) before
+changing token copying, parameter substitution, or generated-text/JSON builders.
+Check resources before construction and preserve ownership transfers.
+
 ## Stack safety
 
 Parser-driven rendering uses a shared depth budget for input-controlled

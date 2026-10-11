@@ -11,6 +11,17 @@ section.
 
 ## [Unreleased]
 
+### Security
+
+- Bound cumulative macro-generated tokens and text before copying or building
+  them, rejecting `\edef`/`\xdef` amplification and oversized repeated macro
+  replacements with a recoverable parse error. Macro aliases and group backups
+  now share immutable definitions; parameter substitution moves the last use.
+- Apply shared allocation limits to mhchem intermediate text, JSON structures
+  and texify output. Pattern captures and unconsumed input now borrow source
+  slices. These limits do not constitute a process-memory or CPU-time cap; see
+  [expansion resource limits](docs/EXPANSION_RESOURCE_LIMITS.md).
+
 ### Added
 
 - Universal Mac Catalyst support in the Apple XCFramework and Swift package,
@@ -23,7 +34,14 @@ section.
   overlapped or left gaps. Glyphs the host does not list keep the built-in
   estimate.
 
+- Allocation-free `Lexer::next_span()` and `TokenSpan`, preserving the existing
+  owned-token lexer API and parser/render interfaces.
+
 ### Performance
+
+- **Parser**: initialize the immutable builtin macro namespace once and keep
+  per-parse overrides separate, avoiding repeated definition allocation while
+  preserving scoped redefinition and alias behavior.
 
 - **PNG**: cache rasterized glyph masks and decoded color-emoji strikes. Glyph
   mask keys are the exact font, glyph, size, sub-pixel position phase, and
