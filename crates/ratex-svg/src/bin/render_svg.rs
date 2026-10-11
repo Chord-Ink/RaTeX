@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
-use ratex_layout::{layout, to_display_list, LayoutOptions};
+use ratex_layout::{layout, to_display_list, validate_layout, LayoutOptions};
 use ratex_parser::parser::parse;
 use ratex_svg::{render_to_svg_with_color_syntax, SvgColorSyntax, SvgOptions};
 use ratex_types::color::Color;
@@ -169,6 +169,7 @@ fn svg_formula(
 ) -> Result<String, String> {
     let ast = parse(expr).map_err(|e| format!("Parse error: {e}"))?;
     let lbox = layout(&ast, layout_opts);
+    validate_layout(&lbox)?;
     let display_list = to_display_list(&lbox);
     Ok(render_to_svg_with_color_syntax(
         &display_list,

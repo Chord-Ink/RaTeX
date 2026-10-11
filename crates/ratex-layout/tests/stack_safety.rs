@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use ratex_layout::{layout, to_display_list, LayoutOptions};
+use ratex_layout::{layout, to_display_list, validate_layout, LayoutOptions};
 use ratex_parser::parser::parse;
 
 const CHILD_ENV: &str = "RATEX_STACK_SAFETY_CHILD";
@@ -78,6 +78,7 @@ fn prooftree_left_label_payload(payload_depth: usize) -> String {
 fn assert_pipeline_ok(input: &str) {
     let ast = parse(input).unwrap_or_else(|error| panic!("failed to parse bounded input: {error}"));
     let layout = layout(&ast, &LayoutOptions::default());
+    validate_layout(&layout).unwrap();
     let _ = to_display_list(&layout);
 }
 

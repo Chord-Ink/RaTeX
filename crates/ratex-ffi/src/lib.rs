@@ -33,7 +33,7 @@ use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 
-use ratex_layout::{layout, to_display_list, LayoutOptions};
+use ratex_layout::{layout, to_display_list, validate_layout, LayoutOptions};
 use ratex_parser::parse;
 use ratex_types::math_style::MathStyle;
 use serde_json::Value;
@@ -91,6 +91,7 @@ fn do_layout(
     let nodes = parse(latex_str).map_err(|e| format!("parse error: {e}"))?;
     let options = LayoutOptions::default().with_style(style).with_color(color);
     let layout_box = layout(&nodes, &options);
+    validate_layout(&layout_box)?;
     let display_list = to_display_list(&layout_box);
     let value =
         serde_json::to_value(&display_list).map_err(|e| format!("serialization error: {e}"))?;
@@ -300,6 +301,25 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use std::ffi::CString;
+
+    #[test]
+    fn dashed_separator_expansion_returns_a_resource_error() {
+        let input = CString::new(format!(
+            r"{}\begin{{array}}{{:c:}}\rule{{1em}}{{10em}}\end{{array}}{}",
+            r"\pmb{".repeat(13),
+            "}".repeat(13)
+        ))
+        .unwrap();
+        let result = unsafe { ratex_parse_and_layout(input.as_ptr(), std::ptr::null()) };
+        assert_eq!(result.error_code, 1);
+        assert!(result.data.is_null());
+        let error = unsafe { CStr::from_ptr(ratex_get_last_error()) };
+        assert!(error
+            .to_str()
+            .unwrap()
+            .contains("Layout resource limit exceeded"));
+        assert!(call("x+1", 1).is_some());
+    }
 
     /// Assert the default formula color applied to the first `GlyphPath` in the protocol JSON is black.
     ///

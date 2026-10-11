@@ -46,12 +46,7 @@ pub fn render_to_png(
     let em_px = em * dpr;
     let pad_px = pad * dpr;
 
-    let total_h = display_list.height + display_list.depth;
-    let img_w = (display_list.width as f32 * em_px + 2.0 * pad_px).ceil() as u32;
-    let img_h = (total_h as f32 * em_px + 2.0 * pad_px).ceil() as u32;
-
-    let img_w = img_w.max(1);
-    let img_h = img_h.max(1);
+    let (img_w, img_h) = checked_pixmap_size(display_list, options)?;
 
     let mut pixmap = Pixmap::new(img_w, img_h)
         .ok_or_else(|| format!("Failed to create pixmap {}x{}", img_w, img_h))?;
@@ -62,6 +57,45 @@ pub fn render_to_png(
     render_with_fonts(&mut pixmap, display_list, options, em_px, pad_px, dpr)?;
 
     encode_png(&pixmap)
+}
+
+/// Maximum RGBA canvas size: 16,777,216 pixels (64 MiB before PNG encoding).
+const MAX_PNG_PIXELS: u64 = 16 * 1024 * 1024;
+
+fn checked_pixmap_size(list: &DisplayList, options: &RenderOptions) -> Result<(u32, u32), String> {
+    let total_h = list.height + list.depth;
+    if !list.width.is_finite()
+        || list.width < 0.0
+        || !list.height.is_finite()
+        || !list.depth.is_finite()
+        || !total_h.is_finite()
+        || total_h < 0.0
+        || !options.font_size.is_finite()
+        || options.font_size <= 0.0
+        || !options.padding.is_finite()
+        || options.padding < 0.0
+        || !options.device_pixel_ratio.is_finite()
+        || options.device_pixel_ratio <= 0.0
+    {
+        return Err("Invalid PNG dimensions or render options".into());
+    }
+    // Preserve the renderer's f32 rounding for ordinary images.
+    let dpr = options.device_pixel_ratio.clamp(0.01, 16.0);
+    let em_px = options.font_size * dpr;
+    let pad_px = options.padding * dpr;
+    let w = (list.width as f32 * em_px + 2.0 * pad_px).ceil();
+    let h = (total_h as f32 * em_px + 2.0 * pad_px).ceil();
+    if !w.is_finite() || !h.is_finite() || w as f64 > u32::MAX as f64 || h as f64 > u32::MAX as f64
+    {
+        return Err("PNG pixel limit exceeded".into());
+    }
+    let (w, h) = ((w as u32).max(1), (h as u32).max(1));
+    if u64::from(w) * u64::from(h) > MAX_PNG_PIXELS {
+        return Err(format!(
+            "PNG pixel limit exceeded: {w}x{h} exceeds {MAX_PNG_PIXELS} pixels"
+        ));
+    }
+    Ok((w, h))
 }
 
 /// Load fonts lazily and render the DisplayList.
@@ -1357,19 +1391,48 @@ fn render_line(
     let paint = paint_for_color(color);
 
     if dashed {
-        // Draw a dashed line: dash length = 4t, gap = 4t.
-        let dash_len = (4.0 * t).max(2.0);
-        let gap_len = (4.0 * t).max(2.0);
-        let period = dash_len + gap_len;
-        let top = y - t / 2.0;
-        let mut cur_x = x;
-        while cur_x < x + width {
-            let seg_width = (dash_len).min(x + width - cur_x);
-            let seg_width = seg_width.max(2.0);
-            if let Some(rect) = tiny_skia::Rect::from_xywh(cur_x, top, seg_width, t) {
-                pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+        // Work in f64 before adding coordinates: f32 accumulation can stop
+        // progressing on long lines placed far outside a small viewport.
+        let (x, y, width, t) = (f64::from(x), f64::from(y), f64::from(width), f64::from(t));
+        if !x.is_finite() || !y.is_finite() || !width.is_finite() || !t.is_finite() || width <= 0.0
+        {
+            return;
+        }
+        let dash = 4.0 * t;
+        let period = 2.0 * dash;
+        let end = x + width;
+        let left = x.max(0.0);
+        // Existing rendering gives partial tail dashes a two-pixel minimum.
+        let right = (end + 2.0).min(f64::from(pixmap.width()));
+        let top = (y - t / 2.0).max(0.0);
+        let bottom = (y + t / 2.0).min(f64::from(pixmap.height()));
+        if left >= right || top >= bottom {
+            return;
+        }
+        // Jump directly to the dash period intersecting the visible left edge.
+        // Keep the phase relative to the original line, never the clipped edge.
+        let first = left - (left - x).rem_euclid(period);
+        let count = ((right - first) / period).ceil() as usize;
+        // At least eight pixels per period; iteration is bounded by the viewport
+        // width even when the original line spans billions of em.
+        for i in 0..count {
+            let start = first + i as f64 * period;
+            if start >= end {
+                break;
             }
-            cur_x += period;
+            let segment_width = dash.min(end - start).max(2.0);
+            let clipped_left = start.max(0.0);
+            let clipped_right = (start + segment_width).min(f64::from(pixmap.width()));
+            if clipped_left < clipped_right {
+                if let Some(rect) = tiny_skia::Rect::from_xywh(
+                    clipped_left as f32,
+                    top as f32,
+                    (clipped_right - clipped_left) as f32,
+                    (bottom - top) as f32,
+                ) {
+                    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+                }
+            }
         }
     } else if let Some(rect) = tiny_skia::Rect::from_xywh(x, y - t / 2.0, width, t) {
         pixmap.fill_rect(rect, &paint, Transform::identity(), None);
@@ -1886,5 +1949,124 @@ mod glyph_mask_cache_tests {
         let pixmap = render(r"\sum_{\mathclap{1\le i\le n}} x_{i}");
         let offset = (82 * pixmap.width() as usize) * 4;
         assert_eq!(&pixmap.data()[offset..offset + 4], &[48, 48, 48, 255]);
+    }
+}
+
+#[cfg(test)]
+mod pixel_resource_tests {
+    use super::*;
+    fn list(width: f64, height: f64) -> DisplayList {
+        DisplayList {
+            width,
+            height,
+            depth: 0.0,
+            items: vec![],
+        }
+    }
+    #[test]
+    fn huge_rule_returns_an_error_before_allocation() {
+        let ast = ratex_parser::parse(r"\rule{1000em}{1000em}").unwrap();
+        let boxes = ratex_layout::layout(&ast, &ratex_layout::LayoutOptions::default());
+        let dl = ratex_layout::to_display_list(&boxes);
+        assert!(checked_pixmap_size(&dl, &RenderOptions::default())
+            .unwrap_err()
+            .contains("PNG pixel limit exceeded"));
+    }
+    #[test]
+    fn pixel_budget_boundary_and_overflow() {
+        let options = RenderOptions {
+            font_size: 1.0,
+            padding: 0.0,
+            ..RenderOptions::default()
+        };
+        assert_eq!(
+            checked_pixmap_size(&list(4096.0, 4096.0), &options).unwrap(),
+            (4096, 4096)
+        );
+        assert!(checked_pixmap_size(&list(4097.0, 4096.0), &options).is_err());
+        assert!(checked_pixmap_size(&list(f64::MAX, f64::MAX), &options).is_err());
+        assert!(checked_pixmap_size(&list(u32::MAX as f64, 1.0), &options).is_err());
+        assert_eq!(
+            checked_pixmap_size(&list(0.0, 0.0), &options).unwrap(),
+            (1, 1)
+        );
+        let dpr = RenderOptions {
+            device_pixel_ratio: 2.0,
+            ..options
+        };
+        assert!(checked_pixmap_size(&list(4096.0, 4096.0), &dpr).is_err());
+    }
+    #[test]
+    fn invalid_dimensions_and_options_are_errors() {
+        for value in [f64::NAN, f64::INFINITY, -1.0] {
+            assert!(render_to_png(&list(value, 1.0), &RenderOptions::default()).is_err());
+            assert!(render_to_png(&list(1.0, value), &RenderOptions::default()).is_err());
+        }
+        for value in [f32::NAN, f32::INFINITY, -1.0, 0.0] {
+            assert!(checked_pixmap_size(
+                &list(1.0, 1.0),
+                &RenderOptions {
+                    font_size: value,
+                    ..RenderOptions::default()
+                }
+            )
+            .is_err());
+            assert!(checked_pixmap_size(
+                &list(1.0, 1.0),
+                &RenderOptions {
+                    device_pixel_ratio: value,
+                    ..RenderOptions::default()
+                }
+            )
+            .is_err());
+        }
+        assert!(checked_pixmap_size(
+            &list(1.0, 1.0),
+            &RenderOptions {
+                padding: -1.0,
+                ..RenderOptions::default()
+            }
+        )
+        .is_err());
+    }
+}
+
+#[cfg(test)]
+mod dashed_line_tests {
+    use super::*;
+
+    fn previous_line(pixmap: &mut Pixmap, x: f32, y: f32, width: f32, thickness: f32) {
+        let t = thickness.max(1.0);
+        let paint = paint_for_color(&Color::BLACK);
+        let dash = 4.0 * t;
+        let mut cur_x = x;
+        while cur_x < x + width {
+            let segment_width = dash.min(x + width - cur_x).max(2.0);
+            if let Some(rect) = tiny_skia::Rect::from_xywh(cur_x, y - t / 2.0, segment_width, t) {
+                pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            }
+            cur_x += 2.0 * dash;
+        }
+    }
+
+    #[test]
+    fn visible_dashes_preserve_phase_and_partial_tails() {
+        for x in [-80.0, -3.5, -1.0, 0.0, 2.25, 12.0, 70.0] {
+            for width in [0.5, 4.0, 8.0, 25.0, 100.0] {
+                for thickness in [1.0, 1.5, 2.0, 3.25] {
+                    for y in [-2.0, 0.0, 4.0, 9.0] {
+                        let mut expected = Pixmap::new(64, 8).unwrap();
+                        let mut actual = Pixmap::new(64, 8).unwrap();
+                        previous_line(&mut expected, x, y, width, thickness);
+                        render_line(&mut actual, x, y, width, thickness, &Color::BLACK, true);
+                        assert_eq!(
+                            actual.data(),
+                            expected.data(),
+                            "x={x} y={y} width={width} t={thickness}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

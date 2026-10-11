@@ -5,7 +5,7 @@ use crate::error::{ParseError, ParseResult};
 use crate::functions::{self, ArgType, FunctionContext, FUNCTIONS};
 use crate::macro_expander::{MacroExpander, IMPLICIT_COMMANDS};
 use crate::parse_node::{AtomFamily, Mode, ParseNode};
-use crate::stack_safety::{validate_parse_nodes_depth, DepthBudget, MAX_INPUT_DEPTH};
+use crate::stack_safety::{validate_parse_nodes, DepthBudget, MAX_INPUT_DEPTH};
 
 /// End-of-expression tokens.
 static END_OF_EXPRESSION: &[&str] = &["}", "\\endgroup", "\\end", "\\right", "&"];
@@ -113,8 +113,7 @@ impl<'a> Parser<'a> {
                 let eof_result = self.expect("EOF", true);
                 self.gullet.end_group();
                 eof_result?;
-                validate_parse_nodes_depth(&parse, MAX_INPUT_DEPTH)
-                    .map_err(|_| ParseError::recursion_limit_exceeded())?;
+                validate_parse_nodes(&parse, MAX_INPUT_DEPTH)?;
                 Ok(parse)
             }
             Err(e) => {

@@ -120,7 +120,7 @@ pub enum BoxContent {
         inner: Box<LayoutBox>,
     },
 
-    /// A matrix/array: rows × columns of cells.
+    /// A matrix/array. Missing trailing cells in each row are implicit empty boxes.
     Array {
         cells: Vec<Vec<LayoutBox>>,
         col_widths: Vec<f64>,

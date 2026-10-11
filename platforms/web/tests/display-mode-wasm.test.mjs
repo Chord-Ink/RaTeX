@@ -133,3 +133,54 @@ test("deep explicit array tags return a JS recursion error", async () => {
     );
   }
 });
+
+test("layout amplification returns a JS error and bounded middle nesting renders", async () => {
+  await initGeneratedWasm();
+  const excessiveBold = `${"\\pmb{".repeat(16)}x${"}".repeat(16)}`;
+  assertJsErrorInsteadOfWasmTrap(
+    () => wasmModule.renderLatex(excessiveBold),
+    /Layout resource limit exceeded/
+  );
+  const middle = `${"\\left(".repeat(32)}x${"\\middle|x\\right)".repeat(32)}`;
+  assert.ok(JSON.parse(wasmModule.renderLatex(middle)).items.length > 0);
+  assert.ok(JSON.parse(wasmModule.renderLatex("x+1")).items.length > 0);
+});
+
+test("array rules count toward the expanded layout budget", async () => {
+  await initGeneratedWasm();
+  for (const rule of ["\\hline ", "\\hdashline "]) {
+    const formula = (count) =>
+      `${"\\pmb{".repeat(13)}\\begin{array}{c}${rule.repeat(count)}x\\end{array}${"}".repeat(13)}`;
+    assert.equal(
+      JSON.parse(wasmModule.renderLatex(formula(3))).items.length,
+      4 * 2 ** 13
+    );
+    for (const count of [4, 64, 300]) {
+      assertJsErrorInsteadOfWasmTrap(
+        () => wasmModule.renderLatex(formula(count)),
+        /Layout resource limit exceeded/
+      );
+    }
+  }
+  assert.ok(JSON.parse(wasmModule.renderLatex("x+1")).items.length > 0);
+});
+
+test("vertical dashed separators are rejected by the layout budget", async () => {
+  await initGeneratedWasm();
+  const formula = (height, columns = ":c", layers = 13) =>
+    `${"\\pmb{".repeat(layers)}\\begin{array}{${columns}}\\rule{1em}{${height}em}\\end{array}${"}".repeat(layers)}`;
+  const boundary = formula("1.6");
+  assert.equal(JSON.parse(wasmModule.renderLatex(boundary)).items.length, 65536);
+  for (const input of [
+    boundary + "x",
+    formula("10", ":c:"),
+    formula("1000", ":c:"),
+    formula("1000000000", ":c", 0),
+  ]) {
+    assertJsErrorInsteadOfWasmTrap(
+      () => wasmModule.renderLatex(input),
+      /Layout resource limit exceeded/
+    );
+  }
+  assert.ok(JSON.parse(wasmModule.renderLatex("x+1")).items.length > 0);
+});

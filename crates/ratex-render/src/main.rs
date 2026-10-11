@@ -3,7 +3,7 @@ use std::io::{self, BufRead};
 use std::path::PathBuf;
 
 use ratex_layout::to_display_list;
-use ratex_layout::{layout, LayoutOptions};
+use ratex_layout::{layout, validate_layout, LayoutOptions};
 use ratex_parser::parser::parse;
 use ratex_render::{render_to_png, RenderOptions};
 use ratex_types::color::Color;
@@ -152,6 +152,7 @@ fn render_formula(
 ) -> Result<Vec<u8>, String> {
     let ast = parse(expr).map_err(|e| format!("Parse error: {}", e))?;
     let lbox = layout(&ast, layout_opts);
+    validate_layout(&lbox)?;
     let display_list = to_display_list(&lbox);
     render_to_png(&display_list, render_opts)
 }

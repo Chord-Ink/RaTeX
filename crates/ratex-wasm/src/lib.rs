@@ -1,6 +1,6 @@
 //! RaTeX WASM bindings: parse LaTeX and return DisplayList as JSON for browser rendering.
 
-use ratex_layout::{layout, to_display_list, LayoutOptions};
+use ratex_layout::{layout, to_display_list, validate_layout, LayoutOptions};
 use ratex_parser::parse;
 use ratex_types::color::Color;
 use ratex_types::display_item::{DisplayItem, DisplayList};
@@ -95,6 +95,7 @@ fn render_latex_impl(
         options
     };
     let layout_box = layout(&nodes, &options);
+    validate_layout(&layout_box)?;
     let mut display_list = to_display_list(&layout_box);
     // serde_json's default f64 serializer errors on NaN/Infinity. Walk the
     // tree once in place and clamp non-finite values to 0 so we can call
