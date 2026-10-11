@@ -11,5 +11,5 @@ pub mod vbox;
 
 pub use engine::layout;
 pub use layout_box::LayoutBox;
-pub use layout_options::LayoutOptions;
+pub use layout_options::{FallbackGlyphMetrics, LayoutOptions};
 pub use to_display::to_display_list;
