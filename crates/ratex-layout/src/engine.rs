@@ -3228,7 +3228,7 @@ fn layout_array(
     // Layout all cells
     let mut cell_boxes: Vec<Vec<LayoutBox>> = Vec::with_capacity(num_rows);
     for row in body {
-        let mut row_boxes = Vec::with_capacity(row.len());
+        let mut row_boxes = Vec::with_capacity(num_cols);
 
         for cell in row {
             let cell_nodes = match cell {
@@ -3239,7 +3239,8 @@ fn layout_array(
             row_boxes.push(cell_box);
         }
 
-        // Missing trailing cells are implicit empty boxes.
+        // The parser charges these padded cells before layout is entered.
+        row_boxes.resize_with(num_cols, LayoutBox::new_empty);
 
         cell_boxes.push(row_boxes);
     }
@@ -6067,7 +6068,7 @@ fn layout_cd(body: &[Vec<ParseNode>], options: &LayoutOptions) -> LayoutBox {
     let mut cell_boxes: Vec<Vec<LayoutBox>> = Vec::with_capacity(num_rows);
 
     for row in body {
-        let mut row_boxes: Vec<LayoutBox> = Vec::with_capacity(row.len());
+        let mut row_boxes: Vec<LayoutBox> = Vec::with_capacity(num_cols);
 
         for cell in row {
             let cbox = match cell {
@@ -6099,7 +6100,8 @@ fn layout_cd(body: &[Vec<ParseNode>], options: &LayoutOptions) -> LayoutBox {
             row_boxes.push(cbox);
         }
 
-        // Missing trailing cells are implicit empty boxes.
+        // Keep the same rectangular public representation as ordinary arrays.
+        row_boxes.resize_with(num_cols, LayoutBox::new_empty);
         cell_boxes.push(row_boxes);
     }
 

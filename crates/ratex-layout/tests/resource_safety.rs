@@ -144,20 +144,49 @@ fn run_cases() {
             .to_string()
             .contains("Recursion limit exceeded"));
     }
-    let sparse = |n: usize| {
-        format!(
-            r"\begin{{matrix}}{}x{}\end{{matrix}}",
-            "&".repeat(n - 1),
-            r"\\x".repeat(n - 1)
-        )
-    };
-    let (_, small) = bounded_layout(&sparse(250));
-    let (large, large_bytes) = bounded_layout(&sparse(500));
-    assert!(
-        large_bytes < small * 3,
-        "sparse growth: {small} -> {large_bytes}"
-    );
-    assert_eq!(to_display_list(&large).items.len(), 500);
+    for (cd, accepted_n) in [(false, 254), (true, 181)] {
+        let sparse = |n: usize| {
+            if cd {
+                format!(
+                    r"\begin{{CD}}{}{}\end{{CD}}",
+                    "@.".repeat(n),
+                    r"\\x".repeat(n - 1)
+                )
+            } else {
+                format!(
+                    r"\begin{{matrix}}{}x{}\end{{matrix}}",
+                    "&".repeat(n - 1),
+                    r"\\x".repeat(n - 1)
+                )
+            }
+        };
+        let (boxes, bytes) = bounded_layout(&sparse(accepted_n));
+        assert!(bytes < BUDGET);
+        ALLOCATED.store(0, Relaxed);
+        ARMED.store(true, Relaxed);
+        let display = to_display_list(&boxes);
+        ARMED.store(false, Relaxed);
+        assert_eq!(
+            display.items.len(),
+            if cd { accepted_n - 1 } else { accepted_n }
+        );
+        for input in [
+            sparse(accepted_n + 1),
+            sparse(500),
+            format!("{}{}{}", r"\pmb{".repeat(13), sparse(2), "}".repeat(13)),
+        ] {
+            // The public parser must reject before callers can allocate a
+            // padded layout; also cap allocations during the rejection itself.
+            ALLOCATED.store(0, Relaxed);
+            ARMED.store(true, Relaxed);
+            let result = parse(&input);
+            ARMED.store(false, Relaxed);
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("Layout resource limit exceeded"));
+        }
+    }
     let (middle, _) = bounded_layout(&nested(r"\left(", r"\middle|x\right)", 32));
     assert!(to_display_list(&middle).items.len() >= 32);
     for n in [33, 300] {

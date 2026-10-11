@@ -184,3 +184,35 @@ test("vertical dashed separators are rejected by the layout budget", async () =>
   }
   assert.ok(JSON.parse(wasmModule.renderLatex("x+1")).items.length > 0);
 });
+
+test("padded Array/CD grids share the layout budget and return JS errors", async () => {
+  await initGeneratedWasm();
+  for (const [cd, n, work] of [
+    [false, 254, 65278],
+    [true, 181, 65522],
+  ]) {
+    const sparse = (size) =>
+      cd
+        ? `\\begin{CD}${"@.".repeat(size)}${"\\\\x".repeat(size - 1)}\\end{CD}`
+        : `\\begin{matrix}${"&".repeat(size - 1)}x${"\\\\x".repeat(size - 1)}\\end{matrix}`;
+    const boundary = sparse(n) + "x".repeat(65536 - work);
+    const display = JSON.parse(wasmModule.renderLatex(boundary));
+    assert.equal(display.items.length, (cd ? n - 1 : n) + 65536 - work);
+    const bold = (layers) =>
+      `${"\\pmb{".repeat(layers)}${sparse(2)}${"}".repeat(layers)}`;
+    assert.ok(JSON.parse(wasmModule.renderLatex(bold(12))).items.length > 0);
+    for (const input of [
+      boundary + "x",
+      sparse(n + 1),
+      sparse(500),
+      bold(13),
+      sparse(150).repeat(3),
+    ]) {
+      assertJsErrorInsteadOfWasmTrap(
+        () => wasmModule.renderLatex(input),
+        /Layout resource limit exceeded/
+      );
+      assert.ok(JSON.parse(wasmModule.renderLatex("x+1")).items.length > 0);
+    }
+  }
+});

@@ -13,6 +13,9 @@ section.
 
 ### Security
 
+- Count Array/CD padding in the parser's layout resource budget before allocating
+  rectangular grids, including enclosing `\pmb` copies. Preserve the public
+  layout tree's padded rows for accepted inputs.
 - Bound cumulative macro-generated tokens and text before copying or building
   them, rejecting `\edef`/`\xdef` amplification and oversized repeated macro
   replacements with a recoverable parse error. Macro aliases and group backups

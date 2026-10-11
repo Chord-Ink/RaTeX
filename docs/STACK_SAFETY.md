@@ -81,6 +81,10 @@ rejects ASTs whose conservative expanded work exceeds **65,536 units**, with
 `Layout resource limit exceeded`. Each AST node, proof branch, and array
 horizontal rule (`\hline` or `\hdashline`, at every row boundary) contributes
 one unit; textual leaves contribute their character count, at least one.
+Array/CD padding contributes one unit per missing trailing cell. Supplied cells
+already contribute through their AST nodes, so the total includes at least
+`rows × maximum columns` units for each rectangular grid. Row deficits are
+summed with saturating arithmetic, without allocating padded cells in the AST.
 Every enclosing `\pmb` doubles these contributions. All branches, array tags,
 and proof payloads count, including branches that will not be displayed. Thus a
 bare 15-level `\pmb{...x...}` is accepted, but 16 levels are rejected. This budget is
@@ -133,9 +137,12 @@ within one layout call. Cache keys include AST content and layout options;
 entries retain only measurements, not expanded layout subtrees. A cache hit
 skips recursive first-pass measurement, avoiding exponential two-pass layout.
 Temporary measurement trees are dropped before building the final tree, and
-no cache survives the call. Array/CD rows retain only supplied cells; missing
-trailing columns are implicit empty cells, so ragged input does not allocate a
-dense grid.
+no cache survives the call. Array/CD layout rows preserve the rectangular public
+representation: each row has `col_widths.len()` cells, including empty trailing
+boxes. The parser rejects excessive padded-grid work before allocating any
+layout tree, including padding copied by enclosing `\pmb` layers and cumulative
+costs across sibling arrays. As with the other AST limits, hand-built ASTs that
+bypass the parser are outside this guarantee.
 
 The PNG renderer rejects canvases larger than **16,777,216 pixels** (64 MiB of
 RGBA canvas storage) before allocation, reporting `PNG pixel limit exceeded`.

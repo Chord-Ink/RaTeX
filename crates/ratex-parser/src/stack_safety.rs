@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::parse_node::{ArrayTag, ParseNode, ProofBranch};
 
 pub(crate) const MAX_INPUT_DEPTH: usize = 32;
-/// Bound AST and array-rule work after expanding poor-man's-bold shadow layers.
+/// Bound AST, padded array cells, and rules after expanding bold shadow layers.
 const MAX_LAYOUT_WORK: usize = 65_536;
 
 #[derive(Debug, Clone, Copy)]
@@ -148,13 +148,23 @@ fn analyze_nodes(nodes: &[ParseNode]) -> (usize, usize) {
             ParseNode::Op {
                 name: Some(name), ..
             } => name.chars().count().max(1),
-            // Horizontal rules live in array metadata, not child AST nodes,
-            // but each emits a display item in every enclosing bold layer.
+            // Supplied cells are charged by the child AST walk. Charge missing
+            // cells here too, before layout allocates the rectangular Array/CD
+            // grid. Summing row deficits avoids overflowing rows * columns.
+            // Both padding and horizontal rules inherit enclosing bold weight.
             ParseNode::Array {
-                hlines_before_row, ..
-            } => hlines_before_row
-                .iter()
-                .fold(1usize, |work, rules| work.saturating_add(rules.len())),
+                body,
+                hlines_before_row,
+                ..
+            } => {
+                let columns = body.iter().map(Vec::len).max().unwrap_or(0);
+                let padded_work = body
+                    .iter()
+                    .fold(1usize, |work, row| work.saturating_add(columns - row.len()));
+                hlines_before_row
+                    .iter()
+                    .fold(padded_work, |work, rules| work.saturating_add(rules.len()))
+            }
             _ => 1,
         };
         work = work.saturating_add(visit.weight.saturating_mul(own_work));
@@ -504,5 +514,55 @@ mod layout_resource_tests {
             parse(r"\begin{array}{c}\hline\hdashline x\\\hline y\\\hdashline\hline\end{array}")
                 .unwrap();
         assert_eq!(analyze_nodes(&ruled).1, analyze_nodes(&plain).1 + 5);
+    }
+
+    fn sparse_grid(cd: bool, n: usize) -> String {
+        if cd {
+            format!(
+                r"\begin{{CD}}{}{}\end{{CD}}",
+                "@.".repeat(n),
+                r"\\x".repeat(n - 1)
+            )
+        } else {
+            format!(
+                r"\begin{{matrix}}{}x{}\end{{matrix}}",
+                "&".repeat(n - 1),
+                r"\\x".repeat(n - 1)
+            )
+        }
+    }
+
+    #[test]
+    fn padded_array_and_cd_work_boundaries_are_checked_before_layout() {
+        for (cd, n, expected_work) in [(false, 254, 65_278), (true, 181, 65_522)] {
+            let input = sparse_grid(cd, n);
+            assert_eq!(analyze_nodes(&parse(&input).unwrap()).1, expected_work);
+            let exact = input + &"x".repeat(MAX_LAYOUT_WORK - expected_work);
+            assert_eq!(analyze_nodes(&parse(&exact).unwrap()).1, MAX_LAYOUT_WORK);
+            for rejected in [exact + "x", sparse_grid(cd, n + 1), sparse_grid(cd, 500)] {
+                assert!(parse(&rejected)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Layout resource limit exceeded"));
+            }
+        }
+    }
+
+    #[test]
+    fn padded_cells_share_bold_and_sibling_budgets() {
+        for cd in [false, true] {
+            let small = sparse_grid(cd, 2);
+            assert!(parse(&pmb(&small, 12)).is_ok());
+            assert!(parse(&pmb(&small, 13))
+                .unwrap_err()
+                .to_string()
+                .contains("Layout resource limit exceeded"));
+            let sibling = sparse_grid(cd, 150);
+            assert!(parse(&sibling).is_ok());
+            assert!(parse(&sibling.repeat(3))
+                .unwrap_err()
+                .to_string()
+                .contains("Layout resource limit exceeded"));
+        }
     }
 }
