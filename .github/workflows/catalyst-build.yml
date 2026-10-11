@@ -1,0 +1,72 @@
+name: Catalyst XCFramework
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - Package.swift
+      - .github/workflows/catalyst-build.yml
+      - scripts/build-apple-xcframework.sh
+      - scripts/verify-xcframework-slices.sh
+      - scripts/verify-apple-static-libraries.sh
+      - .github/workflows/release-ios.yml
+      - .github/workflows/release-react-native.yml
+      - scripts/smoke-catalyst-integration.sh
+      - platforms/ios/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+  push:
+    branches: [main]
+    paths:
+      - Package.swift
+      - .github/workflows/catalyst-build.yml
+      - scripts/build-apple-xcframework.sh
+      - scripts/verify-xcframework-slices.sh
+      - scripts/verify-apple-static-libraries.sh
+      - .github/workflows/release-ios.yml
+      - .github/workflows/release-react-native.yml
+      - scripts/smoke-catalyst-integration.sh
+      - platforms/ios/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  catalyst-build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: >-
+            aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,
+            aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Install Apple Rust toolchain
+        run: |
+          rustup toolchain install nightly-2026-08-16 --profile minimal --component rust-src
+          rustup target add --toolchain nightly-2026-08-16 \
+            aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+            aarch64-apple-ios-macabi x86_64-apple-ios-macabi
+      - uses: Swatinem/rust-cache@v2
+      - name: Build all Apple slices
+        run: bash scripts/build-apple-xcframework.sh
+      - name: Verify device, simulator, macOS and Catalyst slices
+        run: bash scripts/verify-xcframework-slices.sh platforms/ios/RaTeX.xcframework ios macos maccatalyst
+      - name: Build universal UIKit wrapper and run Catalyst formula smoke
+        run: bash scripts/smoke-catalyst-integration.sh
+      - name: Package XCFramework
+        run: |
+          mkdir -p artifacts
+          ditto -c -k --keepParent platforms/ios/RaTeX.xcframework artifacts/RaTeX.xcframework.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ratex-apple-xcframework
+          path: artifacts/RaTeX.xcframework.zip
+          if-no-files-found: error
+          retention-days: 30

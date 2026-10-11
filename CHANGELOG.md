@@ -11,6 +11,11 @@ section.
 
 ## [Unreleased]
 
+### Added
+
+- Universal Mac Catalyst support in the Apple XCFramework and Swift package,
+  with a cloud UIKit/Swift/C ABI rendering smoke and release slice verification.
+
 ### Performance
 
 - **PNG**: cache rasterized glyph masks and decoded color-emoji strikes. Glyph
