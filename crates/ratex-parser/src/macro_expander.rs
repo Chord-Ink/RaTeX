@@ -868,7 +868,10 @@ impl<'a> MacroExpander<'a> {
                         let next = me.future().text.clone();
                         if let Ok(d) = i64::from_str_radix(&next, b) {
                             me.pop_token();
-                            number = number * (b as i64) + d;
+                            number = number
+                                .checked_mul(i64::from(b))
+                                .and_then(|n| n.checked_add(d))
+                                .ok_or_else(|| ParseError::msg("\\char number out of range"))?;
                         } else {
                             break;
                         }

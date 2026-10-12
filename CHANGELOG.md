@@ -13,6 +13,9 @@ section.
 
 ### Security
 
+- Reject overflowing decimal, hexadecimal, and octal `\char` numeric literals
+  with a recoverable parse error instead of panicking or wrapping to an
+  unintended character. Valid character codes retain their existing behavior.
 - Count Array/CD padding in the parser's layout resource budget before allocating
   rectangular grids, including enclosing `\pmb` copies. Preserve the public
   layout tree's padded rows for accepted inputs.
