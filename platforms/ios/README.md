@@ -95,11 +95,13 @@ that their libraries have no `_rust_eh_personality` unwind relocations.
 
 The [Catalyst XCFramework workflow](../../.github/workflows/catalyst-build.yml)
 builds and verifies all slices, compiles the UIKit Swift wrapper and links the
-C ABI for both Catalyst architectures through a temporary local Swift package,
-and uploads `RaTeX.xcframework.zip`. Its bundled formula smoke runs on the
-runner's native architecture and checks parse/layout geometry, bundled fonts,
-and visible rendered pixels. Intel runtime execution is not covered on an
-Apple Silicon runner. The workflow can also be started with `workflow_dispatch`.
+C ABI for both Catalyst architectures through a temporary copy of the repository's
+Swift package manifest, overriding only the binary target location to use the
+local build, and uploads `RaTeX.xcframework.zip`. Its bundled formula smoke runs
+on the runner's native architecture and checks parse/layout geometry, bundled
+fonts, public font registration queries, and visible rendered pixels. Intel
+runtime execution is not covered on an Apple Silicon runner. The workflow can
+also be started with `workflow_dispatch`.
 
 To run the same integration smoke after building the combined artifact:
 
