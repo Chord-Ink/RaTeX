@@ -56,7 +56,8 @@ jobs:
         run: |
           rustup toolchain install nightly-2026-08-16 --profile minimal --component rust-src
           rustup target add --toolchain nightly-2026-08-16 \
-            aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+            aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+            aarch64-apple-ios-macabi x86_64-apple-ios-macabi
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -75,11 +76,11 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
 
-      - name: Build Apple XCFramework (iOS + macOS)
+      - name: Build Apple XCFramework (iOS + macOS + Mac Catalyst)
         run: bash scripts/build-apple-xcframework.sh
 
       - name: Verify XCFramework platform slices
-        run: bash scripts/verify-xcframework-slices.sh platforms/ios/RaTeX.xcframework ios macos
+        run: bash scripts/verify-xcframework-slices.sh platforms/ios/RaTeX.xcframework ios macos maccatalyst
 
       - name: Inject native libs into React Native package
         run: |

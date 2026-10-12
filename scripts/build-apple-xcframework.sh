@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# build-apple-xcframework.sh — Build RaTeX.xcframework for iOS + macOS
+# build-apple-xcframework.sh — Build RaTeX.xcframework for iOS + macOS + Mac Catalyst
 #
 # Prerequisites:
 #   rustup toolchain install nightly-2026-08-16 --component rust-src
 #   rustup target add --toolchain nightly-2026-08-16 \
-#     aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+#     aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+#     aarch64-apple-ios-macabi x86_64-apple-ios-macabi
 #   rustup target add aarch64-apple-darwin x86_64-apple-darwin
 #   Xcode command-line tools installed
 #
-# Output: platforms/ios/RaTeX.xcframework  (iOS + macOS combined)
+# Output: platforms/ios/RaTeX.xcframework  (iOS + macOS + Mac Catalyst combined)
 #
 # Usage:
-#   ./scripts/build-apple-xcframework.sh          # build all (iOS + macOS)
+#   ./scripts/build-apple-xcframework.sh          # build all (iOS + macOS + Mac Catalyst)
 #   ./scripts/build-apple-xcframework.sh --ios     # iOS only
 #   ./scripts/build-apple-xcframework.sh --macos   # macOS only
 
@@ -20,6 +21,7 @@ set -euo pipefail
 cleanup() {
   if [[ -n "${SIM_DIR-}" && -d "$SIM_DIR" ]]; then rm -rf "$SIM_DIR"; fi
   if [[ -n "${MAC_DIR-}" && -d "$MAC_DIR" ]]; then rm -rf "$MAC_DIR"; fi
+  if [[ -n "${CATALYST_DIR-}" && -d "$CATALYST_DIR" ]]; then rm -rf "$CATALYST_DIR"; fi
 }
 trap cleanup EXIT
 
@@ -28,6 +30,7 @@ HEADER_DIR="$REPO_ROOT/crates/ratex-ffi/include"
 OUTPUT="$REPO_ROOT/platforms/ios/RaTeX.xcframework"
 BUILD_IOS=true
 BUILD_MACOS=true
+BUILD_CATALYST=true
 IOS_RUST_TOOLCHAIN="${RATEX_IOS_RUST_TOOLCHAIN:-nightly-2026-08-16}"
 # Controls missing-target behavior:
 # - auto (default): auto-install locally, fail in CI
@@ -37,8 +40,8 @@ AUTO_INSTALL_RUST_TARGETS="${RATEX_AUTO_INSTALL_RUST_TARGETS:-auto}"
 
 for arg in "$@"; do
   case $arg in
-    --ios)   BUILD_MACOS=false ;;
-    --macos) BUILD_IOS=false ;;
+    --ios)   BUILD_MACOS=false; BUILD_CATALYST=false ;;
+    --macos) BUILD_IOS=false; BUILD_CATALYST=false ;;
   esac
 done
 
@@ -137,6 +140,31 @@ if $BUILD_MACOS; then
       -output "$MAC_DIR/libratex_ffi.a"
 
   LIBS+=(-library "$MAC_DIR/libratex_ffi.a" -headers "$HEADER_DIR")
+fi
+
+# ---------------------------------------------------------------------------
+# Mac Catalyst
+# ---------------------------------------------------------------------------
+if $BUILD_CATALYST; then
+  echo "==> Building ratex-ffi for Mac Catalyst targets..."
+
+  CATALYST_SDK="$(xcrun --sdk macosx --show-sdk-path)"
+  for target in aarch64-apple-ios-macabi x86_64-apple-ios-macabi; do
+    SDKROOT="$CATALYST_SDK" IPHONEOS_DEPLOYMENT_TARGET=14.0 \
+      build_ios_target "$target"
+  done
+
+  echo "==> Creating fat Mac Catalyst binary..."
+  CATALYST_DIR=$(mktemp -d)
+  lipo -create \
+      "$REPO_ROOT/target/aarch64-apple-ios-macabi/release/libratex_ffi.a" \
+      "$REPO_ROOT/target/x86_64-apple-ios-macabi/release/libratex_ffi.a" \
+      -output "$CATALYST_DIR/libratex_ffi.a"
+
+  LIBS+=(-library "$CATALYST_DIR/libratex_ffi.a" -headers "$HEADER_DIR")
+
+  echo "==> Verifying Mac Catalyst static library does not reference Rust's unwind personality..."
+  bash "$REPO_ROOT/scripts/verify-apple-static-libraries.sh" "$CATALYST_DIR/libratex_ffi.a"
 fi
 
 # ---------------------------------------------------------------------------
