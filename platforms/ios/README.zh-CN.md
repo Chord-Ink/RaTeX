@@ -79,10 +79,11 @@ Catalyst 使用 Rust 官方的
 展开元数据重定位。`--ios` 和 `--macos` 仍仅构建各自的平台。
 
 [Catalyst XCFramework 工作流](../../.github/workflows/catalyst-build.yml)构建并验证
-所有切片，通过临时本地 Swift 包为两种 Catalyst 架构编译 UIKit Swift 封装并链接
-C ABI，上传 `RaTeX.xcframework.zip`。应用冒烟检查在 runner 的原生架构上运行，
-验证解析与布局几何、字体资源以及可见渲染像素。Apple Silicon runner 不覆盖 Intel
-运行时执行。也可通过 `workflow_dispatch` 手动启动工作流。
+所有切片，通过仓库 Swift package manifest 的临时副本为两种 Catalyst 架构编译
+UIKit Swift 封装并链接 C ABI，仅替换 binary target 地址以使用本地产物，
+上传 `RaTeX.xcframework.zip`。应用冒烟检查在 runner 的原生架构上运行，
+验证解析与布局几何、字体资源、公开字体注册查询接口以及可见渲染像素。
+Apple Silicon runner 不覆盖 Intel 运行时执行。也可通过 `workflow_dispatch` 手动启动工作流。
 
 构建完整产物后，可运行同一集成检查：
 
