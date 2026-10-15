@@ -30,6 +30,8 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Test PNG directory-font errors (without embedded fonts)
+        run: cargo test -p ratex-render --test font_parse_errors -- --ignored
       - name: Test release stack-safety boundary
         run: cargo test --release -p ratex-layout --test stack_safety
       - name: Test ratex-font-loader (all features)

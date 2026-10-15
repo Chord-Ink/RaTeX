@@ -31,6 +31,7 @@ section.
 
 ### Fixed
 
+- PNG rendering reports malformed large-font errors instead of succeeding with missing glyphs.
 - PNG glyphs shifting by one pixel after cache reuse at different positions.
 - mhchem spacing regression caused by escaped `##` source locations.
 - Color inheritance for rules, boxes, and related symbols.

@@ -34,6 +34,31 @@ These tests cover early stylesheet events, 15-second stylesheet/font timeouts,
 failure status, and retries that request a fresh stylesheet. The home playground
 restores its Render button after a font error so users can retry without a reload.
 
+## Rendering performance
+
+Measure first-use PNG latency with a fresh process for each formula and sample:
+
+```bash
+cargo test -p ratex-render --test cold_start --release -- --ignored --nocapture
+```
+
+This emits JSON samples for six categories, separating first parse/layout,
+first PNG render, and a second render. `RATEX_COLD_SAMPLES` defaults to 9.
+It resets application caches, not the operating system's file cache, and excludes
+process startup from the reported timings. For before/after comparisons, use
+separate Cargo target directories, the same font directory (`RATEX_BENCH_FONT_DIR`),
+and alternate executions of the two release test binaries. The child entry point
+is `--ignored --exact cold_start_sample --nocapture` with `RATEX_COLD_CASE` set to
+`math`, `complex`, `matrix`, `cjk`, `emoji`, or `chem`. Set `RATEX_COLD_ONLY=1` when
+measuring its process peak RSS to exclude the second render.
+
+Directory-font error regressions also require a targeted invocation to prevent
+workspace feature unification from replacing directory fonts with embedded fonts:
+
+```bash
+cargo test -p ratex-render --test font_parse_errors -- --ignored
+```
+
 ## Golden (visual) tests
 
 Reference PNGs live under `tests/golden/fixtures/`. Regenerate RaTeX outputs with:
