@@ -824,15 +824,14 @@ const EMOJI_RASTER_CACHE_BYTE_CAP: usize = 64 * 1024 * 1024;
 /// is the dominant PNG render cost and scales with the outline's curve count,
 /// not its pixel area. Repeated renders of the same formula (live preview,
 /// batch re-renders, benchmarks) rasterize the same (font, glyph, size,
-/// position-phase, color) combinations, so the rasterized result is cached and
+/// position, color) combinations, so the rasterized result is cached and
 /// later draws become plain pixel blits.
 ///
-/// Glyph size and the sub-pixel phase of the glyph position are part of the
-/// key **exactly** (as float bit patterns), so every cache hit reproduces the
-/// first caller's rasterization pixel-for-pixel: the same (font, glyph, size,
-/// phase) combination yields the same anti-aliased coverage regardless of the
-/// integer part of the position. Glyphs at integer-aligned positions
-/// additionally share masks within a single formula.
+/// Glyph size and the full device-space position are keyed by their exact
+/// float bit patterns. Paths and bounds are computed in absolute `f32`
+/// coordinates, so integer translations can change rounding, coverage, and
+/// the mask anchor even when the sub-pixel phase is identical. Repeated
+/// renders at the same position still share pixel-identical masks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GlyphMaskKey {
     source: OutlineSourceId,
@@ -840,10 +839,10 @@ struct GlyphMaskKey {
     glyph_id: ab_glyph::GlyphId,
     /// Exact `em` size as `f32` bits.
     size_bits: u32,
-    /// Exact fractional x phase of `px` as `f32` bits.
-    frac_x: u32,
-    /// Exact fractional y phase of `py` as `f32` bits.
-    frac_y: u32,
+    /// Exact device-space `px` as `f32` bits.
+    x_bits: u32,
+    /// Exact device-space `py` as `f32` bits.
+    y_bits: u32,
     color: u32,
 }
 
@@ -1121,15 +1120,15 @@ fn render_glyph_with_font<F: RendererFontOps + ?Sized>(
 
     let paint_rgba = color_to_rgba8(color);
 
-    // Key includes the exact size and sub-pixel phase so a cache hit is
-    // guaranteed to reproduce pixel-identical anti-aliased coverage.
+    // Include full coordinates: absolute f32 rounding can change both the
+    // coverage and integer mask anchor across positions with the same phase.
     let cache_key = GlyphMaskKey {
         source: g.source_id,
         font_id: g.font_id,
         glyph_id: g.glyph_id,
         size_bits: em.to_bits(),
-        frac_x: px.fract().to_bits(),
-        frac_y: py.fract().to_bits(),
+        x_bits: px.to_bits(),
+        y_bits: py.to_bits(),
         color: pack_color_u32(color),
     };
 
@@ -1178,8 +1177,8 @@ fn render_glyph_with_font<F: RendererFontOps + ?Sized>(
 
     // Rasterize into a mask pixmap sized to the glyph's bounds plus a 1 px
     // anti-aliasing margin. The path is translated by the mask's integer
-    // anchor so the stored pixels are position-independent; the blit at
-    // (dst_x, dst_y) restores the device position.
+    // anchor to fit the storage; the blit at (dst_x, dst_y) restores the same
+    // device position. This translation does not undo absolute f32 rounding.
     let Some(mut mask) = Pixmap::new(mask_w, mask_h) else {
         return false;
     };
@@ -1655,6 +1654,90 @@ fn encode_png(pixmap: &Pixmap) -> Result<Vec<u8>, String> {
 mod glyph_mask_cache_tests {
     use super::*;
 
+    fn isolated_test_font() -> ratex_font_loader::FontSet {
+        // A fresh source ID isolates cache state from other tests without
+        // clearing process-wide caches while parallel tests are using them.
+        ratex_font_loader::FontSet::from(HashMap::from([(
+            FontId::MainRegular,
+            std::fs::read(std::path::Path::new(&font_dir()).join("KaTeX_Main-Regular.ttf"))
+                .expect("bundled test font"),
+        )]))
+    }
+
+    fn render_test_glyph(
+        fonts: &ratex_font_loader::FontSet,
+        position: (f32, f32),
+        em: f32,
+    ) -> Pixmap {
+        let (_, bytes, source_id) = fonts.iter_with_source().next().unwrap();
+        let font = FontRef::try_from_slice(bytes).unwrap();
+        let mut pixmap = Pixmap::new(160, 128).unwrap();
+        pixmap.fill(tiny_skia::Color::WHITE);
+        assert!(render_glyph_with_font(
+            &mut pixmap,
+            position.0,
+            position.1,
+            FontGlyph {
+                font_id: FontId::MainRegular,
+                font: &font,
+                source_id,
+                glyph_id: font.glyph_id('a'),
+            },
+            &Color::BLACK,
+            em,
+        ));
+        pixmap
+    }
+
+    fn assert_position_order_independent(first: (f32, f32), second: (f32, f32), em: f32) {
+        for (warmup, target) in [(first, second), (second, first)] {
+            let expected = render_test_glyph(&isolated_test_font(), target, em);
+            let fonts = isolated_test_font();
+            render_test_glyph(&fonts, warmup, em);
+            let actual = render_test_glyph(&fonts, target, em);
+            assert!(
+                expected.data() == actual.data(),
+                "warmup {warmup:?} changed glyph pixels at {target:?}, em={em}: cold bounds {:?}, warm bounds {:?}",
+                ink_bbox(&expected),
+                ink_bbox(&actual),
+            );
+        }
+    }
+
+    #[test]
+    fn integer_x_translation_keeps_cold_and_warm_pixels_identical() {
+        // At this size the left edge rounds across an integer boundary at
+        // the second position despite both origins having the same phase.
+        assert_position_order_independent((5.25, 80.25), (64.25, 80.25), 22.0588);
+    }
+
+    #[test]
+    fn integer_y_translation_keeps_cold_and_warm_pixels_identical() {
+        // Exercise the corresponding rounding boundary at the glyph's top.
+        assert_position_order_independent((64.25, 32.25), (64.25, 80.25), 22.87947);
+    }
+
+    #[test]
+    fn same_position_retains_cached_mask_and_pixels() {
+        let fonts = isolated_test_font();
+        let (_, _, source_id) = fonts.iter_with_source().next().unwrap();
+        let cached_mask = || {
+            let cache = GLYPH_MASK_CACHE.read().unwrap();
+            let mut entries = cache
+                .entries
+                .iter()
+                .filter(|(key, _)| key.source == source_id);
+            let mask = Arc::clone(entries.next().expect("glyph mask must be cached").1);
+            assert!(entries.next().is_none());
+            mask
+        };
+        let first = render_test_glyph(&fonts, (64.25, 80.25), 22.0588);
+        let mask = cached_mask();
+        let repeated = render_test_glyph(&fonts, (64.25, 80.25), 22.0588);
+        assert!(first.data() == repeated.data());
+        assert!(Arc::ptr_eq(&mask, &cached_mask()));
+    }
+
     #[test]
     fn mask_blit_matches_direct_fill_path_for_opaque_and_alpha_paint() {
         let w = 32;
@@ -1919,8 +2002,8 @@ mod glyph_mask_cache_tests {
 
     #[test]
     fn cached_glyph_at_second_position_is_not_misplaced() {
-        // Two identical glyphs at different positions: the second must come
-        // from the mask cache and still be drawn at its own position.
+        // Repeated rendering reuses each position's mask while keeping both
+        // identical glyphs at their respective positions.
         let pixmap = render("a+a");
         let (min_x, _, max_x, _) = ink_bbox(&pixmap);
         // ~20 px per glyph at font_size 40 plus spacing: both `a`s must be
