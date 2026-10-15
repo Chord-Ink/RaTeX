@@ -909,28 +909,43 @@ pub fn load_fonts_for_plan(font_dir: &str, plan: &FontLoadPlan) -> Result<FontSe
         let mut cached = cache
             .write()
             .map_err(|_| "font cache poisoned".to_string())?;
-        let missing: Vec<_> = wanted
-            .iter()
-            .copied()
-            .filter(|&font_id| !cached.entries.contains_key(&cache_key(font_dir, font_id)))
-            .collect();
-        for font_id in missing {
-            let loaded = load_font_bytes(font_dir, font_id)?.map(LoadedFont::new);
-            if let Some(font) = loaded.as_ref() {
-                // Keep a caller-owned clone even if this entry is too large to
-                // cache or evicts older entries that are also part of `wanted`.
-                out.insert(font_id, font.clone());
-            }
-            insert_font_cache_entry(&mut cached, cache_key(font_dir, font_id), loaded);
-        }
-        // Re-collect without clearing `out`: fonts already inserted during the
-        // read-lock fast path stay in place (overwritten with identical Arc
-        // clones), and newly loaded fonts are added.
-        collect_cached(font_dir, &wanted, &cached.entries, &mut out);
+        load_missing_fonts(font_dir, &wanted, &mut cached, &mut out)?;
     }
 
     validate_required(plan, &out)?;
     Ok(FontSet { fonts: out })
+}
+
+/// Complete a cache miss while the caller holds the raw cache's write lock.
+fn load_missing_fonts(
+    font_dir: &str,
+    wanted: &HashSet<FontId>,
+    cached: &mut FontCache,
+    out: &mut HashMap<FontId, LoadedFont>,
+) -> Result<(), String> {
+    // Another caller may have cached a wanted font after our read lock ended.
+    // Retain it before loading other fonts can evict it from the shared cache.
+    collect_cached(font_dir, wanted, &cached.entries, out);
+
+    let missing: Vec<_> = wanted
+        .iter()
+        .copied()
+        .filter(|&font_id| !cached.entries.contains_key(&cache_key(font_dir, font_id)))
+        .collect();
+    for font_id in missing {
+        let loaded = load_font_bytes(font_dir, font_id)?.map(LoadedFont::new);
+        if let Some(font) = loaded.as_ref() {
+            // Keep a caller-owned clone even if this entry is too large to
+            // cache or evicts older entries that are also part of `wanted`.
+            out.insert(font_id, font.clone());
+        }
+        insert_font_cache_entry(cached, cache_key(font_dir, font_id), loaded);
+    }
+    // Re-collect without clearing `out`: fonts already inserted during the
+    // read-lock fast path stay in place (overwritten with identical Arc
+    // clones), and newly loaded fonts are added.
+    collect_cached(font_dir, wanted, &cached.entries, out);
+    Ok(())
 }
 
 fn collect_cached(
@@ -1157,6 +1172,131 @@ mod tests {
         insert_font_cache_entry_with_limits(&mut cached, key_a.clone(), too_large, 8, 8);
         assert_eq!(cached.bytes, 6);
         assert!(!cached.entries.contains_key(&key_a));
+    }
+
+    enum EvictionLimit {
+        Entries,
+        Bytes,
+    }
+
+    fn assert_concurrent_font_survives_eviction(limit: EvictionLimit) {
+        use ab_glyph::{Font, FontRef};
+
+        let font_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fonts")
+            .to_string_lossy()
+            .into_owned();
+        let regular_bytes = load_font_bytes(&font_dir, FontId::MainRegular)
+            .expect("read Main-Regular")
+            .expect("Main-Regular exists")
+            .len();
+        let mut initial = FontCache::default();
+        match limit {
+            EvictionLimit::Entries => {
+                for i in 0..FONT_CACHE_CAP - 1 {
+                    let key = CacheKey {
+                        source: FontSourceKey::Directory(PathBuf::from(format!(
+                            "unrelated-font-dir-{i}"
+                        ))),
+                        font_id: FontId::MainBold,
+                    };
+                    insert_font_cache_entry(&mut initial, key, None);
+                }
+            }
+            EvictionLimit::Bytes => {
+                let filler = LoadedFont::new(FontStorage::Owned(Arc::new(vec![
+                    0;
+                    FONT_CACHE_BYTE_CAP
+                        - regular_bytes
+                ])));
+                insert_font_cache_entry(
+                    &mut initial,
+                    cache_key(&font_dir, FontId::MainBold),
+                    Some(filler),
+                );
+            }
+        }
+        // Isolate this cache so eviction cannot disturb other parallel tests.
+        let cache = RwLock::new(initial);
+        let plan = FontLoadPlan {
+            required: HashSet::from([FontId::MainRegular, FontId::MathItalic]),
+            optional: HashSet::new(),
+        };
+        let wanted = plan.all();
+        let mut out = HashMap::new();
+        {
+            let cached = cache.read().unwrap();
+            assert!(!collect_cached(
+                &font_dir,
+                &wanted,
+                &cached.entries,
+                &mut out
+            ));
+            assert!(out.is_empty());
+        }
+
+        // Suspend caller A between its read and write locks. Caller B completes
+        // a load of one of A's required fonts using the same write-lock path.
+        let other = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let mut cached = cache.write().unwrap();
+                    let mut fonts = HashMap::new();
+                    load_missing_fonts(
+                        &font_dir,
+                        &HashSet::from([FontId::MainRegular]),
+                        &mut cached,
+                        &mut fonts,
+                    )
+                    .expect("caller B loads Main-Regular");
+                    FontSet { fonts }
+                })
+                .join()
+                .expect("caller B did not panic")
+        });
+
+        {
+            let mut cached = cache.write().unwrap();
+            match limit {
+                EvictionLimit::Entries => assert_eq!(cached.entries.len(), FONT_CACHE_CAP),
+                EvictionLimit::Bytes => assert_eq!(cached.bytes, FONT_CACHE_BYTE_CAP),
+            }
+            load_missing_fonts(&font_dir, &wanted, &mut cached, &mut out)
+                .expect("caller A loads remaining fonts");
+            // Loading Math-Italic must actually evict Main-Regular in both cases.
+            assert!(!cached
+                .entries
+                .contains_key(&cache_key(&font_dir, FontId::MainRegular)));
+            assert!(cached
+                .entries
+                .contains_key(&cache_key(&font_dir, FontId::MathItalic)));
+        }
+
+        validate_required(&plan, &out).expect("caller A retains both required fonts");
+        let fonts = FontSet { fonts: out };
+        assert_eq!(
+            fonts.fonts[&FontId::MainRegular].source_id,
+            other.fonts[&FontId::MainRegular].source_id
+        );
+        // The returned handles must remain usable after the cache and caller B
+        // release their references, without reparsing a different generation.
+        drop(other);
+        drop(cache);
+        for font_id in plan.required() {
+            let font = FontRef::try_from_slice(fonts.get(font_id).unwrap())
+                .expect("retained font bytes still parse");
+            assert_ne!(font.glyph_id('x').0, 0);
+        }
+    }
+
+    #[test]
+    fn concurrent_font_survives_entry_limit_eviction() {
+        assert_concurrent_font_survives_eviction(EvictionLimit::Entries);
+    }
+
+    #[test]
+    fn concurrent_font_survives_byte_limit_eviction() {
+        assert_concurrent_font_survives_eviction(EvictionLimit::Bytes);
     }
 
     #[test]
