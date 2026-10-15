@@ -52,6 +52,47 @@ fn replacement_moves_last_reference_and_preserves_hashes() {
     assert_eq!(b.used().tokens, 1);
 }
 #[test]
+fn escaped_hash_preserves_source_location_and_allocation_cost() {
+    let text = "C ##N#1";
+    let tokens = stack(text);
+    for template in [Template::Text(text), Template::Tokens(&tokens)] {
+        let budget = limited(4, 4);
+        let output = template.expand(vec![stack("x")], &budget).unwrap();
+        let hash = output.iter().find(|t| t.text == "#").unwrap();
+        assert_eq!(hash.loc, SourceLocation { start: 3, end: 4 });
+        assert_eq!(
+            output
+                .iter()
+                .rev()
+                .map(|t| t.text.as_str())
+                .collect::<String>(),
+            "C #Nx"
+        );
+        assert_eq!(
+            budget.used(),
+            Cost {
+                tokens: 4,
+                bytes: 4,
+                nodes: 0
+            }
+        );
+    }
+}
+
+#[test]
+fn escaped_hash_in_macro_preserves_mhchem_bond_spacing() {
+    for (body, expected) in [("C ##N", "C #N"), ("C ## N", "C # N"), ("##N", "#N")] {
+        let input = format!(r"\def\foo#1{{\ce{{{body}}}}}\foo{{x}}");
+        let expected = format!(r"\ce{{{expected}}}");
+        assert_eq!(
+            serde_json::to_value(crate::parse(&input).unwrap()).unwrap(),
+            serde_json::to_value(crate::parse(&expected).unwrap()).unwrap(),
+            "{input} should match {expected}"
+        );
+    }
+}
+
+#[test]
 fn text_scanning_checks_before_copying_large_token() {
     for text in [
         format!("\\{}", "a".repeat(4096)),

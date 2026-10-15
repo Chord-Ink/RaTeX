@@ -37,7 +37,9 @@ parameter's last occurrence takes ownership of its tokens; preceding
 occurrences clone them. Template literals are copied from the immutable macro
 definition, while placeholder tokens are not copied. For example, replacing
 `#1#1` with owned argument `ab` adds exactly two tokens and two bytes, producing
-`abab`. `##` creates one literal `#` when argument substitution is active.
+`abab`. `##` creates one literal `#` when argument substitution is active,
+retaining the second token's source location and flags. The location preserves
+mhchem's source-gap-based whitespace reconstruction.
 
 ## Implementation boundaries
 

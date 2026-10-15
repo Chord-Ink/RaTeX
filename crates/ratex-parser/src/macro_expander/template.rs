@@ -73,7 +73,9 @@ impl<'a> Iterator for Items<'a> {
         if self.num_args > 0 && t.text == "#" {
             if let Some(next) = self.iter.peek() {
                 if next.text == "#" {
-                    self.iter.next();
+                    // Preserve the second hash's location: mhchem uses source
+                    // gaps to reconstruct whitespace after macro substitution.
+                    return self.iter.next().map(Item::Literal);
                 } else if let Ok(n) = next.text.parse::<usize>() {
                     if n > 0 && n <= self.num_args {
                         self.iter.next();
