@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use ratex_font::{get_global_metrics, MathConstants};
 use ratex_types::color::Color;
 use ratex_types::math_style::MathStyle;
@@ -29,9 +26,6 @@ pub struct LayoutOptions {
     /// This is layout state propagated through `\tiny` ... `\Huge`; callers
     /// should normally leave it at its default.
     pub explicit_size_multiplier: f64,
-    /// Metrics for characters the KaTeX fonts have no metrics for, such as Cyrillic in `\text{…}`, measured by the
-    /// host with the font it draws them in. Characters not listed keep the built-in estimate.
-    pub fallback_glyph_metrics: Option<Arc<HashMap<char, FallbackGlyphMetrics>>>,
 }
 
 impl Default for LayoutOptions {
@@ -43,7 +37,6 @@ impl Default for LayoutOptions {
             leftright_delim_height: None,
             inter_glyph_kern_em: 0.0,
             explicit_size_multiplier: 1.0,
-            fallback_glyph_metrics: None,
         }
     }
 }
@@ -65,7 +58,6 @@ impl LayoutOptions {
             leftright_delim_height: self.leftright_delim_height,
             inter_glyph_kern_em: self.inter_glyph_kern_em,
             explicit_size_multiplier: self.explicit_size_multiplier,
-            fallback_glyph_metrics: self.fallback_glyph_metrics.clone(),
         }
     }
 
@@ -77,17 +69,6 @@ impl LayoutOptions {
             leftright_delim_height: self.leftright_delim_height,
             inter_glyph_kern_em: self.inter_glyph_kern_em,
             explicit_size_multiplier: self.explicit_size_multiplier,
-            fallback_glyph_metrics: self.fallback_glyph_metrics.clone(),
-        }
-    }
-
-    pub fn with_fallback_glyph_metrics(
-        &self,
-        metrics: Arc<HashMap<char, FallbackGlyphMetrics>>,
-    ) -> Self {
-        Self {
-            fallback_glyph_metrics: Some(metrics),
-            ..self.clone()
         }
     }
 

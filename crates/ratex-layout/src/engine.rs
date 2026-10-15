@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use ratex_font::{get_char_metrics, get_global_metrics, FontId};
 use ratex_parser::parse_node::{
@@ -12,7 +13,7 @@ use crate::hbox::make_hbox;
 use crate::layout_box::{
     BoxContent, LayoutBox, PlacedBox, ProofRule, RunGlyph, VBoxChild, VBoxChildKind,
 };
-use crate::layout_options::LayoutOptions as PublicLayoutOptions;
+use crate::layout_options::{FallbackGlyphMetrics, LayoutOptions as PublicLayoutOptions};
 use crate::scoped_options::ScopedOptions as LayoutOptions;
 
 use crate::katex_svg::parse_svg_path_data;
@@ -35,6 +36,45 @@ fn style_str_to_math_style(style: &StyleStr) -> MathStyle {
 /// Main entry point: lay out a list of ParseNodes into a LayoutBox.
 pub fn layout(nodes: &[ParseNode], options: &PublicLayoutOptions) -> LayoutBox {
     layout_expression(nodes, &LayoutOptions::new(options.clone()), true)
+}
+
+/// Lay out nodes using host-measured metrics for glyphs missing from the KaTeX fonts.
+///
+/// This entry point accepts host-provided glyph metrics while preserving
+/// source compatibility of [`LayoutOptions`](crate::LayoutOptions).
+///
+/// Metrics are in em at the base font size; layout applies TeX style and explicit
+/// size scaling. Measure them with the same fallback font used for rendering.
+/// KaTeX glyphs and characters absent from the map keep their usual metrics.
+/// The immutable map is shared within this call; it is not copied or retained
+/// in a global cache. An empty map produces the same output as [`layout`].
+///
+/// Like [`layout`], this constructs a tree without validating output work.
+/// Call [`crate::validate_layout`] before converting untrusted input to a
+/// DisplayList. The parser's depth and resource limits still apply.
+///
+/// ```
+/// use std::{collections::HashMap, sync::Arc};
+/// use ratex_layout::{
+///     layout_with_fallback_metrics, to_display_list, validate_layout,
+///     FallbackGlyphMetrics, LayoutOptions,
+/// };
+///
+/// let ast = ratex_parser::parse(r"\text{ш}").unwrap();
+/// let metrics = Arc::new(HashMap::from([('ш', FallbackGlyphMetrics {
+///     width: 0.82, height: 0.53, depth: 0.0,
+/// })]));
+/// let tree = layout_with_fallback_metrics(&ast, &LayoutOptions::default(), metrics);
+/// validate_layout(&tree).unwrap();
+/// let display = to_display_list(&tree);
+/// ```
+pub fn layout_with_fallback_metrics(
+    nodes: &[ParseNode],
+    options: &PublicLayoutOptions,
+    metrics: Arc<HashMap<char, FallbackGlyphMetrics>>,
+) -> LayoutBox {
+    let scoped = LayoutOptions::new(options.clone()).with_fallback_metrics(metrics);
+    layout_expression(nodes, &scoped, true)
 }
 
 /// KaTeX `binLeftCanceller` / `binRightCanceller` (TeXbook p.442–446, Rules 5–6).
@@ -6677,65 +6717,6 @@ mod missing_glyph_width_em_tests {
 }
 
 #[cfg(test)]
-mod fallback_glyph_metrics_tests {
-    use std::collections::HashMap;
-    use std::sync::Arc;
-
-    use ratex_parser::parse;
-
-    use crate::layout_options::{FallbackGlyphMetrics, LayoutOptions};
-
-    fn text_width(latex: &str, options: &LayoutOptions) -> f64 {
-        super::layout(&parse(latex).unwrap(), options).width
-    }
-
-    #[test]
-    fn measured_metrics_replace_the_estimate_for_glyphs_katex_lacks() {
-        let measured = FallbackGlyphMetrics {
-            width: 0.82,
-            height: 0.53,
-            depth: 0.0,
-        };
-        let options =
-            LayoutOptions::default().with_fallback_glyph_metrics(Arc::new(HashMap::from([
-                ('ш', measured),
-                (
-                    'і',
-                    FallbackGlyphMetrics {
-                        width: 0.27,
-                        height: 0.74,
-                        depth: 0.0,
-                    },
-                ),
-            ])));
-
-        assert!((text_width("\\text{ш}", &LayoutOptions::default()) - 0.5).abs() < 1e-9);
-        assert!((text_width("\\text{ш}", &options) - 0.82).abs() < 1e-9);
-        assert!((text_width("\\text{ші}", &options) - 1.09).abs() < 1e-9);
-        let boxed = super::layout(&parse("\\text{ш}").unwrap(), &options);
-        assert!((boxed.height - 0.53).abs() < 1e-9);
-    }
-
-    #[test]
-    fn measured_metrics_leave_katex_glyphs_alone() {
-        let options =
-            LayoutOptions::default().with_fallback_glyph_metrics(Arc::new(HashMap::from([(
-                'x',
-                FallbackGlyphMetrics {
-                    width: 3.0,
-                    height: 3.0,
-                    depth: 3.0,
-                },
-            )])));
-
-        assert_eq!(
-            text_width("x", &options),
-            text_width("x", &LayoutOptions::default())
-        );
-    }
-}
-
-#[cfg(test)]
 mod vertical_delimiter_geometry_tests {
     use super::*;
 
@@ -7280,18 +7261,17 @@ mod resource_compatibility_tests {
         ).unwrap();
         let mut outputs = Vec::new();
         for height in [0.7, 3.0, 0.7] {
-            let public = PublicLayoutOptions::default().with_fallback_glyph_metrics(Arc::new(
-                HashMap::from([(
-                    'Ж',
-                    FallbackGlyphMetrics {
-                        width: 0.8,
-                        height,
-                        depth: 0.2,
-                    },
-                )]),
-            ));
-            let cached = layout(&ast, &public);
-            let mut uncached_options = LayoutOptions::new(public);
+            let public = PublicLayoutOptions::default();
+            let metrics = Arc::new(HashMap::from([(
+                'Ж',
+                FallbackGlyphMetrics {
+                    width: 0.8,
+                    height,
+                    depth: 0.2,
+                },
+            )]));
+            let cached = layout_with_fallback_metrics(&ast, &public, metrics.clone());
+            let mut uncached_options = LayoutOptions::new(public).with_fallback_metrics(metrics);
             uncached_options.disable_cache = true;
             let uncached = layout_expression(&ast, &uncached_options, true);
             let output = serde_json::to_value(to_display_list(&cached)).unwrap();

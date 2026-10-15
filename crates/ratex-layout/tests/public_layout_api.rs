@@ -100,3 +100,38 @@ fn ragged_array_and_cd_keep_rectangular_cells_and_display_output() {
         );
     }
 }
+
+#[test]
+fn v014_options_support_full_literals_and_exhaustive_patterns() {
+    use ratex_layout::{layout, LayoutOptions};
+    use ratex_types::{color::Color, math_style::MathStyle};
+
+    // Deliberately omit struct update syntax and `..` in the pattern: adding
+    // any public or private field (or non_exhaustive) must fail this external test.
+    let options = LayoutOptions {
+        style: MathStyle::Text,
+        color: Color::BLACK,
+        align_relation_spacing: None,
+        leftright_delim_height: None,
+        inter_glyph_kern_em: 0.0,
+        explicit_size_multiplier: 1.0,
+    };
+    let LayoutOptions {
+        style,
+        color,
+        align_relation_spacing,
+        leftright_delim_height,
+        inter_glyph_kern_em,
+        explicit_size_multiplier,
+    } = options.clone();
+    assert_eq!(style, MathStyle::Text);
+    assert_eq!(color, Color::BLACK);
+    assert_eq!(align_relation_spacing, None);
+    assert_eq!(leftright_delim_height, None);
+    assert_eq!(inter_glyph_kern_em, 0.0);
+    assert_eq!(explicit_size_multiplier, 1.0);
+    let old_entry: fn(&[ratex_parser::ParseNode], &LayoutOptions) -> ratex_layout::LayoutBox =
+        layout;
+    let tree = old_entry(&ratex_parser::parse("x").unwrap(), &options);
+    ratex_layout::validate_layout(&tree).unwrap();
+}

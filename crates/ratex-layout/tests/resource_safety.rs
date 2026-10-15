@@ -1,6 +1,9 @@
 //! Isolated allocation-budget regressions: a regression exits only the child,
 //! before requesting a dangerous allocation from the system allocator.
-use ratex_layout::{layout, to_display_list, validate_layout, FallbackGlyphMetrics, LayoutOptions};
+use ratex_layout::{
+    layout, layout_with_fallback_metrics, to_display_list, validate_layout, FallbackGlyphMetrics,
+    LayoutOptions,
+};
 use ratex_parser::parse;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
@@ -74,11 +77,11 @@ fn run_cases() {
                     )
                 })
                 .collect();
-            let options =
-                LayoutOptions::default().with_fallback_glyph_metrics(std::sync::Arc::new(metrics));
+            let options = LayoutOptions::default();
+            let metrics = std::sync::Arc::new(metrics);
             ALLOCATED.store(0, Relaxed);
             ARMED.store(true, Relaxed);
-            let boxes = layout(&ast, &options);
+            let boxes = layout_with_fallback_metrics(&ast, &options, metrics);
             ARMED.store(false, Relaxed);
             let bytes = ALLOCATED.load(Relaxed);
             let display = serde_json::to_value(to_display_list(&boxes)).unwrap();

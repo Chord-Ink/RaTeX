@@ -119,6 +119,18 @@ validate_layout(&layout_box)?;
 let display_list = to_display_list(&layout_box);
 ```
 
+Rust hosts that measure fallback fonts can instead call
+`layout_with_fallback_metrics(&ast, &options, metrics)`, where `metrics` is an
+`Arc<HashMap<char, FallbackGlyphMetrics>>`. This additive entry point keeps
+`LayoutOptions` source-compatible with v0.1.14, including full struct literals
+and exhaustive patterns. It uses the same layout engine and requires the same
+`validate_layout` step before DisplayList conversion. An empty map is equivalent
+to `layout`; unlisted characters keep the built-in estimates and KaTeX glyphs
+keep their own metrics. Values are measured in em at the base font size, using
+the host's rendering font; layout applies style and explicit-size scaling. The
+map is shared only for the duration of the call and is not a global setting.
+It neither loads fonts nor changes the renderer's font selection.
+
 FFI, WASM, GTK, and the PNG/SVG/PDF command-line tools perform this validation
 and propagate its errors before DisplayList conversion, serialization, or
 rendering. Their external signatures remain unchanged. Layout construction,

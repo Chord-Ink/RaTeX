@@ -12,15 +12,16 @@
 
 ### 兼容性
 
-- **Rust 源码兼容性变化**：`LayoutOptions` 新增 `fallback_glyph_metrics` 字段，默认值为
-  `None`。完整结构体字面量需补充该字段或使用 `..LayoutOptions::default()`；
-  穷尽解构需补充该字段或 `..`。默认值和构建器用法、C ABI、DisplayList JSON 保持兼容。
+- `LayoutOptions` 保留 v0.1.14 的字段结构，`layout(nodes, options)` 签名不变。
+  旧代码的完整结构体字面量和穷尽解构仍然有效，无需迁移。宿主字形度量通过新增的
+  `layout_with_fallback_metrics` API 传入；C ABI 和 DisplayList JSON 保持不变。
 
 ### 新增
 
 - `\slashed` 和 `\centernot` 命令。
 - Apple XCFramework 和 Swift 包支持 Mac Catalyst。
-- 支持宿主提供回退字形度量，改善文本间距。
+- 新增 `layout_with_fallback_metrics(nodes, options, metrics)`，支持宿主提供回退字形
+  度量，改善文本间距。用法见 API rustdoc，资源限制见[布局校验说明](docs/STACK_SAFETY.md)。
 - CLI 支持配置 PNG/SVG 内边距。
 - 新增 `Lexer::next_span()` 和 `TokenSpan`，支持借用式词法标记。
 

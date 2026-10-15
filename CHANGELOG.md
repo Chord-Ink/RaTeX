@@ -13,16 +13,19 @@ section.
 
 ### Compatibility
 
-- **Rust source change**: `LayoutOptions` adds `fallback_glyph_metrics` (default:
-  `None`). Full struct literals must add the field or use
-  `..LayoutOptions::default()`; exhaustive patterns must add the field or `..`.
-  Default/builder usage, the C ABI, and DisplayList JSON remain compatible.
+- `LayoutOptions` keeps the v0.1.14 fields and `layout(nodes, options)` keeps its
+  signature. Existing full struct literals and exhaustive patterns remain valid.
+  Host-provided glyph metrics use the additive `layout_with_fallback_metrics`
+  API; no caller migration is required. The C ABI and DisplayList JSON remain
+  unchanged.
 
 ### Added
 
 - `\slashed` and `\centernot` commands.
 - Mac Catalyst support in the Apple XCFramework and Swift package.
-- Host-provided fallback glyph metrics for more accurate text spacing.
+- `layout_with_fallback_metrics(nodes, options, metrics)` for host-provided
+  fallback glyph metrics and more accurate text spacing. See the API rustdoc
+  for an example and [layout validation](docs/STACK_SAFETY.md) for resource limits.
 - Configurable PNG/SVG padding in the CLI.
 - Borrowed lexer tokens via `Lexer::next_span()` and `TokenSpan`.
 

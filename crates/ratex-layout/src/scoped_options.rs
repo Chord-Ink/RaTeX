@@ -1,11 +1,11 @@
 //! Per-call layout state. Kept separate from the public options so callers do
 //! not retain caches or have to initialize implementation-specific fields.
-use std::{cell::RefCell, collections::HashMap, ops::Deref, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, ops::Deref, rc::Rc, sync::Arc};
 
 use ratex_parser::ParseNode;
 use ratex_types::{color::Color, math_style::MathStyle};
 
-use crate::LayoutOptions;
+use crate::{FallbackGlyphMetrics, LayoutOptions};
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) struct DelimiterKey {
@@ -20,6 +20,7 @@ pub(crate) struct DelimiterKey {
 #[derive(Clone, Default)]
 pub(crate) struct ScopedOptions {
     options: LayoutOptions,
+    pub(crate) fallback_glyph_metrics: Option<Arc<HashMap<char, FallbackGlyphMetrics>>>,
     #[cfg(test)]
     pub(crate) disable_cache: bool,
     delimiters: Rc<RefCell<HashMap<DelimiterKey, f64>>>,
@@ -37,6 +38,16 @@ impl ScopedOptions {
         Self {
             options,
             ..Self::default()
+        }
+    }
+
+    pub(crate) fn with_fallback_metrics(
+        self,
+        metrics: Arc<HashMap<char, FallbackGlyphMetrics>>,
+    ) -> Self {
+        Self {
+            fallback_glyph_metrics: Some(metrics),
+            ..self
         }
     }
 
@@ -86,7 +97,6 @@ impl ScopedOptions {
             leftright_delim_height: _,
             inter_glyph_kern_em,
             explicit_size_multiplier,
-            fallback_glyph_metrics: _,
         } = &self.options;
         DelimiterKey {
             content: serde_json::to_string(&(body, left, right)).expect("serializable AST"),

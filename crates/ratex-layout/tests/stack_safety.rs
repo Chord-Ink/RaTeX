@@ -1,6 +1,8 @@
 use std::process::Command;
 
-use ratex_layout::{layout, to_display_list, validate_layout, LayoutOptions};
+use ratex_layout::{
+    layout, layout_with_fallback_metrics, to_display_list, validate_layout, LayoutOptions,
+};
 use ratex_parser::parser::parse;
 
 const CHILD_ENV: &str = "RATEX_STACK_SAFETY_CHILD";
@@ -79,7 +81,17 @@ fn assert_pipeline_ok(input: &str) {
     let ast = parse(input).unwrap_or_else(|error| panic!("failed to parse bounded input: {error}"));
     let layout = layout(&ast, &LayoutOptions::default());
     validate_layout(&layout).unwrap();
-    let _ = to_display_list(&layout);
+    let expected = serde_json::to_value(to_display_list(&layout)).unwrap();
+    let with_metrics = layout_with_fallback_metrics(
+        &ast,
+        &LayoutOptions::default(),
+        std::sync::Arc::new(Default::default()),
+    );
+    validate_layout(&with_metrics).unwrap();
+    assert_eq!(
+        serde_json::to_value(to_display_list(&with_metrics)).unwrap(),
+        expected
+    );
 }
 
 fn assert_recursion_limit(input: &str) {
