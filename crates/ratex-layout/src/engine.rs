@@ -698,6 +698,13 @@ fn missing_glyph_height_em(ch: char, m: &ratex_font::MathConstants) -> f64 {
 }
 
 fn missing_glyph_metrics_fallback(ch: char, options: &LayoutOptions) -> (f64, f64, f64) {
+    if let Some(measured) = options
+        .fallback_glyph_metrics
+        .as_ref()
+        .and_then(|metrics| metrics.get(&ch))
+    {
+        return (measured.width, measured.height, measured.depth);
+    }
     let m = get_global_metrics(options.style.size_index());
     let w = missing_glyph_width_em(ch);
     if w >= 0.99 {
@@ -6682,6 +6689,65 @@ mod missing_glyph_width_em_tests {
     #[test]
     fn latin_without_metrics_stays_half_em() {
         assert_eq!(missing_glyph_width_em('z'), 0.5);
+    }
+}
+
+#[cfg(test)]
+mod fallback_glyph_metrics_tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use ratex_parser::parse;
+
+    use crate::layout_options::{FallbackGlyphMetrics, LayoutOptions};
+
+    fn text_width(latex: &str, options: &LayoutOptions) -> f64 {
+        super::layout(&parse(latex).unwrap(), options).width
+    }
+
+    #[test]
+    fn measured_metrics_replace_the_estimate_for_glyphs_katex_lacks() {
+        let measured = FallbackGlyphMetrics {
+            width: 0.82,
+            height: 0.53,
+            depth: 0.0,
+        };
+        let options =
+            LayoutOptions::default().with_fallback_glyph_metrics(Arc::new(HashMap::from([
+                ('ш', measured),
+                (
+                    'і',
+                    FallbackGlyphMetrics {
+                        width: 0.27,
+                        height: 0.74,
+                        depth: 0.0,
+                    },
+                ),
+            ])));
+
+        assert!((text_width("\\text{ш}", &LayoutOptions::default()) - 0.5).abs() < 1e-9);
+        assert!((text_width("\\text{ш}", &options) - 0.82).abs() < 1e-9);
+        assert!((text_width("\\text{ші}", &options) - 1.09).abs() < 1e-9);
+        let boxed = super::layout(&parse("\\text{ш}").unwrap(), &options);
+        assert!((boxed.height - 0.53).abs() < 1e-9);
+    }
+
+    #[test]
+    fn measured_metrics_leave_katex_glyphs_alone() {
+        let options =
+            LayoutOptions::default().with_fallback_glyph_metrics(Arc::new(HashMap::from([(
+                'x',
+                FallbackGlyphMetrics {
+                    width: 3.0,
+                    height: 3.0,
+                    depth: 3.0,
+                },
+            )])));
+
+        assert_eq!(
+            text_width("x", &options),
+            text_width("x", &LayoutOptions::default())
+        );
     }
 }
 

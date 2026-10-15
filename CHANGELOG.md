@@ -15,6 +15,13 @@ section.
 
 - Universal Mac Catalyst support in the Apple XCFramework and Swift package,
   with a cloud UIKit/Swift/C ABI rendering smoke and release slice verification.
+- **Layout**: `LayoutOptions::fallback_glyph_metrics` (with `FallbackGlyphMetrics`)
+  lets a host supply the width, height and depth, in em, of glyphs the KaTeX
+  fonts have no metrics for, measured with the font it draws them in. Such
+  glyphs otherwise get a fixed 0.5 em advance (1 em for CJK and emoji), so text
+  that a platform fallback font draws, such as Cyrillic in `\text{…}`,
+  overlapped or left gaps. Glyphs the host does not list keep the built-in
+  estimate.
 
 ### Performance
 
