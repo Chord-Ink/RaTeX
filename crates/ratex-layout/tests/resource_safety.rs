@@ -1,6 +1,6 @@
 //! Isolated allocation-budget regressions: a regression exits only the child,
 //! before requesting a dangerous allocation from the system allocator.
-use ratex_layout::{layout, to_display_list, validate_layout, LayoutOptions};
+use ratex_layout::{layout, to_display_list, validate_layout, FallbackGlyphMetrics, LayoutOptions};
 use ratex_parser::parse;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
@@ -53,6 +53,46 @@ fn bounded_layout(input: &str) -> (ratex_layout::LayoutBox, usize) {
 fn run_cases() {
     // Warm up one-time font and parser initialization outside the budget.
     bounded_layout("x");
+    // Delimiter cache keys must not copy/format a host's entire fallback map,
+    // on either hits (repeated bodies) or misses (distinct bodies).
+    for distinct in [false, true] {
+        let input = (0..100)
+            .map(|i| format!(r"\left(x_{}\middle|y\right)", if distinct { i } else { 0 }))
+            .collect::<String>();
+        let ast = parse(&input).unwrap();
+        let mut baseline = None;
+        for count in [0, 1_000, 10_000] {
+            let metrics = (0..count)
+                .map(|i| {
+                    (
+                        char::from_u32(0x400 + i).unwrap(),
+                        FallbackGlyphMetrics {
+                            width: 0.5,
+                            height: 0.7,
+                            depth: 0.0,
+                        },
+                    )
+                })
+                .collect();
+            let options =
+                LayoutOptions::default().with_fallback_glyph_metrics(std::sync::Arc::new(metrics));
+            ALLOCATED.store(0, Relaxed);
+            ARMED.store(true, Relaxed);
+            let boxes = layout(&ast, &options);
+            ARMED.store(false, Relaxed);
+            let bytes = ALLOCATED.load(Relaxed);
+            let display = serde_json::to_value(to_display_list(&boxes)).unwrap();
+            if let Some((base_bytes, base_display)) = &baseline {
+                assert!(
+                    bytes <= base_bytes + 4096,
+                    "{count} metrics allocated {bytes} vs {base_bytes}"
+                );
+                assert_eq!(&display, base_display);
+            } else {
+                baseline = Some((bytes, display));
+            }
+        }
+    }
     // Geometry-dependent dashed separators bypass the parser's AST budget.
     // Eight items per layer give an exact accepted DisplayList boundary.
     // Public layout trees remain owned; the allocator caps the full tree and

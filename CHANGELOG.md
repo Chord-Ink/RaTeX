@@ -32,6 +32,8 @@ section.
 - mhchem spacing regression caused by escaped `##` source locations.
 - Color inheritance for rules, boxes, and related symbols.
 - Website rendering before fonts finish loading.
+- Website font-loading failures now time out and allow retrying without reloading the page.
+- Delimiter cache keys no longer serialize the host's fallback glyph metrics map on every lookup.
 - iOS linking failures involving unwind symbols.
 
 ### Security

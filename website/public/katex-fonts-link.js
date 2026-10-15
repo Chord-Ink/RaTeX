@@ -36,27 +36,34 @@
   } else {
     href = new URL("platforms/web/fonts.css", getSiteDirUrl()).href;
   }
-  var link = document.createElement("link");
-  link.rel = "stylesheet";
-  link.href = href;
-  link.setAttribute("data-ratex-fonts-stylesheet", "");
+  var link;
+  function requestStylesheet() {
+    if (link) link.remove();
+    link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = href;
+    link.setAttribute("data-ratex-fonts-stylesheet", "");
+    var currentLink = link;
 
-  g.__RATEX_FONTS_STYLESHEET_READY__ = new Promise(function (resolve) {
-    link.addEventListener(
-      "load",
-      function () {
-        resolve({ ok: true, href: href });
-      },
-      { once: true }
-    );
-    link.addEventListener(
-      "error",
-      function () {
-        resolve({ ok: false, href: href });
-      },
-      { once: true }
-    );
-  });
+    g.__RATEX_FONTS_STYLESHEET_READY__ = new Promise(function (resolve) {
+      function finish(ok, timedOut) {
+        clearTimeout(timer);
+        currentLink.removeEventListener("load", onLoad);
+        currentLink.removeEventListener("error", onError);
+        resolve({ ok: ok, href: href, timedOut: !!timedOut });
+      }
+      function onLoad() { finish(true); }
+      function onError() { finish(false); }
+      var timer = setTimeout(function () { finish(false, true); }, 15000);
+      currentLink.addEventListener("load", onLoad);
+      currentLink.addEventListener("error", onError);
+    });
 
-  document.head.insertBefore(link, document.head.firstChild);
+    // Subscribe before insertion: cached successes and early failures must both
+    // remain observable by gallery.js, even if it starts much later.
+    document.head.insertBefore(currentLink, document.head.firstChild);
+    return g.__RATEX_FONTS_STYLESHEET_READY__;
+  }
+  g.__RATEX_RETRY_FONTS_STYLESHEET__ = requestStylesheet;
+  requestStylesheet();
 })();

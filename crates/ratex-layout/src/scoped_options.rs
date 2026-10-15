@@ -7,12 +7,22 @@ use ratex_types::{color::Color, math_style::MathStyle};
 
 use crate::LayoutOptions;
 
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub(crate) struct DelimiterKey {
+    content: String,
+    style: MathStyle,
+    color: [u32; 4],
+    align_relation_spacing: Option<u64>,
+    inter_glyph_kern_em: u64,
+    explicit_size_multiplier: u64,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct ScopedOptions {
     options: LayoutOptions,
     #[cfg(test)]
     pub(crate) disable_cache: bool,
-    delimiters: Rc<RefCell<HashMap<String, f64>>>,
+    delimiters: Rc<RefCell<HashMap<DelimiterKey, f64>>>,
 }
 
 impl Deref for ScopedOptions {
@@ -57,19 +67,38 @@ impl ScopedOptions {
         result
     }
 
-    pub(crate) fn delimiter_key(&self, body: &[ParseNode], left: &str, right: &str) -> String {
+    pub(crate) fn delimiter_key(
+        &self,
+        body: &[ParseNode],
+        left: &str,
+        right: &str,
+    ) -> DelimiterKey {
         // Content keys also work for temporary ASTs synthesized by HTML/text
         // and proof-tree layout; pointer keys could alias after those are freed.
-        // A scope containing its own middle resets the inherited height.
-        let normalized = self.with_middle_height(None);
-        format!(
-            "{:?}:{}",
-            normalized.options,
-            serde_json::to_string(&(body, left, right)).expect("serializable AST")
-        )
+        // A scope containing its own middle resets the inherited height. The
+        // fallback metrics Arc is immutable and identical throughout this
+        // per-call cache, so neither serialize nor hash its potentially huge map.
+        // Keep this exhaustive so new public options require a cache-key decision.
+        let LayoutOptions {
+            style,
+            color,
+            align_relation_spacing,
+            leftright_delim_height: _,
+            inter_glyph_kern_em,
+            explicit_size_multiplier,
+            fallback_glyph_metrics: _,
+        } = &self.options;
+        DelimiterKey {
+            content: serde_json::to_string(&(body, left, right)).expect("serializable AST"),
+            style: *style,
+            color: [color.r, color.g, color.b, color.a].map(f32::to_bits),
+            align_relation_spacing: align_relation_spacing.map(f64::to_bits),
+            inter_glyph_kern_em: inter_glyph_kern_em.to_bits(),
+            explicit_size_multiplier: explicit_size_multiplier.to_bits(),
+        }
     }
 
-    pub(crate) fn cached_delimiter_height(&self, key: &str) -> Option<f64> {
+    pub(crate) fn cached_delimiter_height(&self, key: &DelimiterKey) -> Option<f64> {
         #[cfg(test)]
         if self.disable_cache {
             return None;
@@ -77,7 +106,7 @@ impl ScopedOptions {
         self.delimiters.borrow().get(key).copied()
     }
 
-    pub(crate) fn cache_delimiter_height(&self, key: String, height: f64) {
+    pub(crate) fn cache_delimiter_height(&self, key: DelimiterKey, height: f64) {
         #[cfg(test)]
         if self.disable_cache {
             return;

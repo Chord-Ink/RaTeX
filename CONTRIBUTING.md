@@ -24,6 +24,16 @@ cargo test --workspace
 
 CI runs the same checks (`.github/workflows/ci.yml`) after installing GTK dependencies. The local pre-commit hook skips only `ratex-gtk4` when GTK4/graphene `pkg-config` files are missing, while still linting the rest of the workspace.
 
+Website font-loading regressions run without a browser or WASM build:
+
+```bash
+cd website && npm test
+```
+
+These tests cover early stylesheet events, 15-second stylesheet/font timeouts,
+failure status, and retries that request a fresh stylesheet. The home playground
+restores its Render button after a font error so users can retry without a reload.
+
 ## Golden (visual) tests
 
 Reference PNGs live under `tests/golden/fixtures/`. Regenerate RaTeX outputs with:

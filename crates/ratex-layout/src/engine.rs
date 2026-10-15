@@ -7271,6 +7271,41 @@ mod resource_compatibility_tests {
     use super::*;
     use crate::to_display_list;
     #[test]
+    fn delimiter_cache_is_isolated_between_fallback_metrics_maps() {
+        use crate::FallbackGlyphMetrics;
+        use std::{collections::HashMap, sync::Arc};
+
+        let ast = ratex_parser::parse(
+            r"\left(\text{Ж}\middle|\frac{\left(\text{Ж}\middle|x\right)}{\left(\text{Ж}\middle|x\right)}\right)",
+        ).unwrap();
+        let mut outputs = Vec::new();
+        for height in [0.7, 3.0, 0.7] {
+            let public = PublicLayoutOptions::default().with_fallback_glyph_metrics(Arc::new(
+                HashMap::from([(
+                    'Ж',
+                    FallbackGlyphMetrics {
+                        width: 0.8,
+                        height,
+                        depth: 0.2,
+                    },
+                )]),
+            ));
+            let cached = layout(&ast, &public);
+            let mut uncached_options = LayoutOptions::new(public);
+            uncached_options.disable_cache = true;
+            let uncached = layout_expression(&ast, &uncached_options, true);
+            let output = serde_json::to_value(to_display_list(&cached)).unwrap();
+            assert_eq!(
+                output,
+                serde_json::to_value(to_display_list(&uncached)).unwrap()
+            );
+            outputs.push(output);
+        }
+        assert_ne!(outputs[0], outputs[1]);
+        assert_eq!(outputs[0], outputs[2]);
+    }
+
+    #[test]
     fn delimiter_reuse_preserves_display_output_across_contexts() {
         let cases = [
             r"\left(\left(x\middle|y\right)\middle|z\right)",

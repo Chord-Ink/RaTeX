@@ -97,6 +97,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Test website font loading and retry behavior
+        working-directory: website
+        run: npm test
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown

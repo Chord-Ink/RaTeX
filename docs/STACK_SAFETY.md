@@ -133,7 +133,11 @@ regressions enforce a 64 MiB cumulative allocation guard per layout/validation
 or DisplayList-conversion phase, not a whole-process memory limit.
 
 Nested `\left...\middle...\right` scopes cache first-pass delimiter heights
-within one layout call. Cache keys include AST content and layout options;
+within one layout call. Cache keys include AST content and scalar layout options
+(with floating-point values represented by their bits). Inherited middle height
+is reset for measurement. The fallback glyph metrics map is immutable and shared
+throughout the call, so it is not serialized or hashed for each key. Different
+calls always use separate caches, including when their fallback metrics differ;
 entries retain only measurements, not expanded layout subtrees. A cache hit
 skips recursive first-pass measurement, avoiding exponential two-pass layout.
 Temporary measurement trees are dropped before building the final tree, and
