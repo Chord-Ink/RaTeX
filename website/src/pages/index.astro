@@ -38,12 +38,7 @@ const pageDescription =
   lang={lang}
   copyright={t.footer.copyright}
 >
-  <link
-    slot="head"
-    rel="stylesheet"
-    href={`${base}platforms/web/fonts.css`}
-    data-ratex-fonts-stylesheet
-  />
+  <script slot="head" src={`${base}katex-fonts-link.js`}></script>
 
   <main class="pt-24 lg:pt-20">
     <header class="mx-auto max-w-7xl border-x border-b border-outline/30 px-5 py-10 sm:px-6 md:py-14 lg:py-16">

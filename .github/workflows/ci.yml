@@ -30,6 +30,8 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Test PNG directory-font errors (without embedded fonts)
+        run: cargo test -p ratex-render --test font_parse_errors -- --ignored
       - name: Test release stack-safety boundary
         run: cargo test --release -p ratex-layout --test stack_safety
       - name: Test ratex-font-loader (all features)
@@ -97,6 +99,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Test website font loading and retry behavior
+        working-directory: website
+        run: npm test
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown

@@ -46,12 +46,7 @@ pub fn render_to_png(
     let em_px = em * dpr;
     let pad_px = pad * dpr;
 
-    let total_h = display_list.height + display_list.depth;
-    let img_w = (display_list.width as f32 * em_px + 2.0 * pad_px).ceil() as u32;
-    let img_h = (total_h as f32 * em_px + 2.0 * pad_px).ceil() as u32;
-
-    let img_w = img_w.max(1);
-    let img_h = img_h.max(1);
+    let (img_w, img_h) = checked_pixmap_size(display_list, options)?;
 
     let mut pixmap = Pixmap::new(img_w, img_h)
         .ok_or_else(|| format!("Failed to create pixmap {}x{}", img_w, img_h))?;
@@ -62,6 +57,45 @@ pub fn render_to_png(
     render_with_fonts(&mut pixmap, display_list, options, em_px, pad_px, dpr)?;
 
     encode_png(&pixmap)
+}
+
+/// Maximum RGBA canvas size: 16,777,216 pixels (64 MiB before PNG encoding).
+const MAX_PNG_PIXELS: u64 = 16 * 1024 * 1024;
+
+fn checked_pixmap_size(list: &DisplayList, options: &RenderOptions) -> Result<(u32, u32), String> {
+    let total_h = list.height + list.depth;
+    if !list.width.is_finite()
+        || list.width < 0.0
+        || !list.height.is_finite()
+        || !list.depth.is_finite()
+        || !total_h.is_finite()
+        || total_h < 0.0
+        || !options.font_size.is_finite()
+        || options.font_size <= 0.0
+        || !options.padding.is_finite()
+        || options.padding < 0.0
+        || !options.device_pixel_ratio.is_finite()
+        || options.device_pixel_ratio <= 0.0
+    {
+        return Err("Invalid PNG dimensions or render options".into());
+    }
+    // Preserve the renderer's f32 rounding for ordinary images.
+    let dpr = options.device_pixel_ratio.clamp(0.01, 16.0);
+    let em_px = options.font_size * dpr;
+    let pad_px = options.padding * dpr;
+    let w = (list.width as f32 * em_px + 2.0 * pad_px).ceil();
+    let h = (total_h as f32 * em_px + 2.0 * pad_px).ceil();
+    if !w.is_finite() || !h.is_finite() || w as f64 > u32::MAX as f64 || h as f64 > u32::MAX as f64
+    {
+        return Err("PNG pixel limit exceeded".into());
+    }
+    let (w, h) = ((w as u32).max(1), (h as u32).max(1));
+    if u64::from(w) * u64::from(h) > MAX_PNG_PIXELS {
+        return Err(format!(
+            "PNG pixel limit exceeded: {w}x{h} exceeds {MAX_PNG_PIXELS} pixels"
+        ));
+    }
+    Ok((w, h))
 }
 
 /// Load fonts lazily and render the DisplayList.
@@ -85,8 +119,7 @@ fn render_with_fonts(
         em_px,
         pad_px,
         dpr,
-    );
-    Ok(())
+    )
 }
 
 fn to_tiny_skia_color(color: Color) -> tiny_skia::Color {
@@ -141,11 +174,11 @@ struct LazyRawFont<'a> {
 }
 
 impl<'a> LazyRawFont<'a> {
-    fn get(&self) -> Option<&FontRef<'a>> {
+    fn get(&self, font_id: FontId) -> Result<&FontRef<'a>, String> {
         self.parsed
             .get_or_init(|| FontRef::try_from_slice_and_index(self.bytes, self.face_index))
             .as_ref()
-            .ok()
+            .map_err(|err| format!("Failed to parse font {}: {err:?}", font_id.as_str()))
     }
 }
 
@@ -230,8 +263,8 @@ fn render_char_with_entry(
     color: &Color,
     em: f32,
     entry: &RendererFontRef<'_>,
-) -> bool {
-    match &entry.font {
+) -> Result<bool, String> {
+    Ok(match &entry.font {
         RendererFont::Parsed(font) => render_char_with_font(
             pixmap,
             px,
@@ -243,20 +276,18 @@ fn render_char_with_entry(
             *font,
             entry.source_id,
         ),
-        RendererFont::Raw(raw) => raw.get().is_some_and(|font| {
-            render_char_with_font(
-                pixmap,
-                px,
-                py,
-                font_id,
-                ch,
-                color,
-                em,
-                font,
-                entry.source_id,
-            )
-        }),
-    }
+        RendererFont::Raw(raw) => render_char_with_font(
+            pixmap,
+            px,
+            py,
+            font_id,
+            ch,
+            color,
+            em,
+            raw.get(font_id)?,
+            entry.source_id,
+        ),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -270,15 +301,15 @@ fn render_char_with_system_fallback(
     em: f32,
     font_cache: &HashMap<FontId, RendererFontRef<'_>>,
     system_fonts: &SystemFontResolver,
-) -> bool {
+) -> Result<bool, String> {
     if let Some(entry) = font_cache.get(&font_id) {
         return render_char_with_entry(pixmap, px, py, font_id, ch, color, em, entry);
     }
 
-    let Ok(Some(font)) = system_fonts.get(font_id) else {
-        return false;
+    let Some(font) = system_fonts.get(font_id)? else {
+        return Ok(false);
     };
-    render_char_with_font(
+    Ok(render_char_with_font(
         pixmap,
         px,
         py,
@@ -288,7 +319,7 @@ fn render_char_with_system_fallback(
         em,
         font.font(),
         font.source_id(),
-    )
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -329,7 +360,7 @@ fn render_display_list(
     em_px: f32,
     pad_px: f32,
     dpr: f32,
-) {
+) -> Result<(), String> {
     let mut font_id_cache: HashMap<&str, FontId> = HashMap::new();
     for item in &display_list.items {
         match item {
@@ -355,7 +386,7 @@ fn render_display_list(
                     font_cache,
                     system_fonts,
                     glyph_em,
-                );
+                )?;
             }
             DisplayItem::Line {
                 x,
@@ -411,6 +442,7 @@ fn render_display_list(
             }
         }
     }
+    Ok(())
 }
 
 /// After `.notdef` or a cmap slot with **no drawable outline** (common for emoji in text fonts),
@@ -431,12 +463,12 @@ fn try_system_unicode_fallback(
     font_cache: &HashMap<FontId, RendererFontRef<'_>>,
     system_fonts: &SystemFontResolver,
     skip_main_regular: bool,
-) -> bool {
+) -> Result<bool, String> {
     if !skip_main_regular {
         if let Some(fallback) = font_cache.get(&FontId::MainRegular) {
-            if render_char_with_entry(pixmap, px, py, FontId::MainRegular, ch, color, em, fallback)
+            if render_char_with_entry(pixmap, px, py, FontId::MainRegular, ch, color, em, fallback)?
             {
-                return true;
+                return Ok(true);
             }
         }
     }
@@ -450,11 +482,11 @@ fn try_system_unicode_fallback(
         em,
         font_cache,
         system_fonts,
-    ) {
-        return true;
+    )? {
+        return Ok(true);
     }
-    if try_emoji_vector_then_bitmap(pixmap, px, py, ch, color, em, font_cache, system_fonts) {
-        return true;
+    if try_emoji_vector_then_bitmap(pixmap, px, py, ch, color, em, font_cache, system_fonts)? {
+        return Ok(true);
     }
     render_char_with_system_fallback(
         pixmap,
@@ -482,12 +514,12 @@ fn try_emoji_vector_then_bitmap(
     em: f32,
     font_cache: &HashMap<FontId, RendererFontRef<'_>>,
     system_fonts: &SystemFontResolver,
-) -> bool {
+) -> Result<bool, String> {
     if !ratex_unicode_font::is_emoji_candidate(ch) {
-        return false;
+        return Ok(false);
     }
     if try_blit_emoji_raster_fallback(pixmap, px, py, em, ch, color) {
-        return true;
+        return Ok(true);
     }
     render_char_with_system_fallback(
         pixmap,
@@ -513,12 +545,12 @@ fn render_glyph(
     font_cache: &HashMap<FontId, RendererFontRef<'_>>,
     system_fonts: &SystemFontResolver,
     em: f32,
-) {
+) -> Result<(), String> {
     let font_entry = match font_cache.get(&font_id) {
         Some(entry) => entry,
         None => match font_cache.get(&FontId::MainRegular) {
             Some(entry) => entry,
-            None => return,
+            None => return Ok(()),
         },
     };
 
@@ -536,23 +568,19 @@ fn render_glyph(
             *font,
             font_entry.source_id,
         ),
-        RendererFont::Raw(raw) => {
-            if let Some(font) = raw.get() {
-                render_glyph_from_font(
-                    pixmap,
-                    px,
-                    py,
-                    font_id,
-                    char_code,
-                    color,
-                    font_cache,
-                    system_fonts,
-                    em,
-                    font,
-                    font_entry.source_id,
-                );
-            }
-        }
+        RendererFont::Raw(raw) => render_glyph_from_font(
+            pixmap,
+            px,
+            py,
+            font_id,
+            char_code,
+            color,
+            font_cache,
+            system_fonts,
+            em,
+            raw.get(font_id)?,
+            font_entry.source_id,
+        ),
     }
 }
 
@@ -569,7 +597,7 @@ fn render_glyph_from_font<F: RendererFontOps + ?Sized>(
     em: f32,
     font: &F,
     source_id: OutlineSourceId,
-) {
+) -> Result<(), String> {
     let ch = ratex_font::katex_ttf_glyph_char(font_id, char_code);
     let glyph_id = font.glyph_id(ch);
 
@@ -584,13 +612,13 @@ fn render_glyph_from_font<F: RendererFontOps + ?Sized>(
             font_cache,
             system_fonts,
             false,
-        );
-        return;
+        )?;
+        return Ok(());
     }
 
     if font_id == FontId::EmojiFallback {
         if try_blit_emoji_raster_fallback(pixmap, px, py, em, ch, color) {
-            return;
+            return Ok(());
         }
         let _ = render_glyph_with_font(
             pixmap,
@@ -605,7 +633,7 @@ fn render_glyph_from_font<F: RendererFontOps + ?Sized>(
             color,
             em,
         );
-        return;
+        return Ok(());
     }
 
     // `RATEX_UNICODE_FONT` may map a codepoint to a non-.notdef glyph with no outlines; try system fallback.
@@ -623,10 +651,10 @@ fn render_glyph_from_font<F: RendererFontOps + ?Sized>(
             color,
             em,
         ) {
-            return;
+            return Ok(());
         }
-        if try_emoji_vector_then_bitmap(pixmap, px, py, ch, color, em, font_cache, system_fonts) {
-            return;
+        if try_emoji_vector_then_bitmap(pixmap, px, py, ch, color, em, font_cache, system_fonts)? {
+            return Ok(());
         }
         if render_char_with_system_fallback(
             pixmap,
@@ -638,10 +666,10 @@ fn render_glyph_from_font<F: RendererFontOps + ?Sized>(
             em,
             font_cache,
             system_fonts,
-        ) {
-            return;
+        )? {
+            return Ok(());
         }
-        return;
+        return Ok(());
     }
 
     if font_id == FontId::CjkFallback {
@@ -658,11 +686,11 @@ fn render_glyph_from_font<F: RendererFontOps + ?Sized>(
             color,
             em,
         ) {
-            return;
+            return Ok(());
         }
         let _ =
-            try_emoji_vector_then_bitmap(pixmap, px, py, ch, color, em, font_cache, system_fonts);
-        return;
+            try_emoji_vector_then_bitmap(pixmap, px, py, ch, color, em, font_cache, system_fonts)?;
+        return Ok(());
     }
 
     if render_glyph_with_font(
@@ -678,7 +706,7 @@ fn render_glyph_from_font<F: RendererFontOps + ?Sized>(
         color,
         em,
     ) {
-        return;
+        return Ok(());
     }
     // cmap had a non-zero GID but no `glyf` outline (e.g. blank text-font slot for emoji).
     let skip_main = font_id == FontId::MainRegular;
@@ -692,7 +720,8 @@ fn render_glyph_from_font<F: RendererFontOps + ?Sized>(
         font_cache,
         system_fonts,
         skip_main,
-    );
+    )?;
+    Ok(())
 }
 
 struct FontGlyph<'a, F: ?Sized> {
@@ -790,15 +819,14 @@ const EMOJI_RASTER_CACHE_BYTE_CAP: usize = 64 * 1024 * 1024;
 /// is the dominant PNG render cost and scales with the outline's curve count,
 /// not its pixel area. Repeated renders of the same formula (live preview,
 /// batch re-renders, benchmarks) rasterize the same (font, glyph, size,
-/// position-phase, color) combinations, so the rasterized result is cached and
+/// position, color) combinations, so the rasterized result is cached and
 /// later draws become plain pixel blits.
 ///
-/// Glyph size and the sub-pixel phase of the glyph position are part of the
-/// key **exactly** (as float bit patterns), so every cache hit reproduces the
-/// first caller's rasterization pixel-for-pixel: the same (font, glyph, size,
-/// phase) combination yields the same anti-aliased coverage regardless of the
-/// integer part of the position. Glyphs at integer-aligned positions
-/// additionally share masks within a single formula.
+/// Glyph size and the full device-space position are keyed by their exact
+/// float bit patterns. Paths and bounds are computed in absolute `f32`
+/// coordinates, so integer translations can change rounding, coverage, and
+/// the mask anchor even when the sub-pixel phase is identical. Repeated
+/// renders at the same position still share pixel-identical masks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GlyphMaskKey {
     source: OutlineSourceId,
@@ -806,10 +834,10 @@ struct GlyphMaskKey {
     glyph_id: ab_glyph::GlyphId,
     /// Exact `em` size as `f32` bits.
     size_bits: u32,
-    /// Exact fractional x phase of `px` as `f32` bits.
-    frac_x: u32,
-    /// Exact fractional y phase of `py` as `f32` bits.
-    frac_y: u32,
+    /// Exact device-space `px` as `f32` bits.
+    x_bits: u32,
+    /// Exact device-space `py` as `f32` bits.
+    y_bits: u32,
     color: u32,
 }
 
@@ -1087,15 +1115,15 @@ fn render_glyph_with_font<F: RendererFontOps + ?Sized>(
 
     let paint_rgba = color_to_rgba8(color);
 
-    // Key includes the exact size and sub-pixel phase so a cache hit is
-    // guaranteed to reproduce pixel-identical anti-aliased coverage.
+    // Include full coordinates: absolute f32 rounding can change both the
+    // coverage and integer mask anchor across positions with the same phase.
     let cache_key = GlyphMaskKey {
         source: g.source_id,
         font_id: g.font_id,
         glyph_id: g.glyph_id,
         size_bits: em.to_bits(),
-        frac_x: px.fract().to_bits(),
-        frac_y: py.fract().to_bits(),
+        x_bits: px.to_bits(),
+        y_bits: py.to_bits(),
         color: pack_color_u32(color),
     };
 
@@ -1144,8 +1172,8 @@ fn render_glyph_with_font<F: RendererFontOps + ?Sized>(
 
     // Rasterize into a mask pixmap sized to the glyph's bounds plus a 1 px
     // anti-aliasing margin. The path is translated by the mask's integer
-    // anchor so the stored pixels are position-independent; the blit at
-    // (dst_x, dst_y) restores the device position.
+    // anchor to fit the storage; the blit at (dst_x, dst_y) restores the same
+    // device position. This translation does not undo absolute f32 rounding.
     let Some(mut mask) = Pixmap::new(mask_w, mask_h) else {
         return false;
     };
@@ -1357,19 +1385,48 @@ fn render_line(
     let paint = paint_for_color(color);
 
     if dashed {
-        // Draw a dashed line: dash length = 4t, gap = 4t.
-        let dash_len = (4.0 * t).max(2.0);
-        let gap_len = (4.0 * t).max(2.0);
-        let period = dash_len + gap_len;
-        let top = y - t / 2.0;
-        let mut cur_x = x;
-        while cur_x < x + width {
-            let seg_width = (dash_len).min(x + width - cur_x);
-            let seg_width = seg_width.max(2.0);
-            if let Some(rect) = tiny_skia::Rect::from_xywh(cur_x, top, seg_width, t) {
-                pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+        // Work in f64 before adding coordinates: f32 accumulation can stop
+        // progressing on long lines placed far outside a small viewport.
+        let (x, y, width, t) = (f64::from(x), f64::from(y), f64::from(width), f64::from(t));
+        if !x.is_finite() || !y.is_finite() || !width.is_finite() || !t.is_finite() || width <= 0.0
+        {
+            return;
+        }
+        let dash = 4.0 * t;
+        let period = 2.0 * dash;
+        let end = x + width;
+        let left = x.max(0.0);
+        // Existing rendering gives partial tail dashes a two-pixel minimum.
+        let right = (end + 2.0).min(f64::from(pixmap.width()));
+        let top = (y - t / 2.0).max(0.0);
+        let bottom = (y + t / 2.0).min(f64::from(pixmap.height()));
+        if left >= right || top >= bottom {
+            return;
+        }
+        // Jump directly to the dash period intersecting the visible left edge.
+        // Keep the phase relative to the original line, never the clipped edge.
+        let first = left - (left - x).rem_euclid(period);
+        let count = ((right - first) / period).ceil() as usize;
+        // At least eight pixels per period; iteration is bounded by the viewport
+        // width even when the original line spans billions of em.
+        for i in 0..count {
+            let start = first + i as f64 * period;
+            if start >= end {
+                break;
             }
-            cur_x += period;
+            let segment_width = dash.min(end - start).max(2.0);
+            let clipped_left = start.max(0.0);
+            let clipped_right = (start + segment_width).min(f64::from(pixmap.width()));
+            if clipped_left < clipped_right {
+                if let Some(rect) = tiny_skia::Rect::from_xywh(
+                    clipped_left as f32,
+                    top as f32,
+                    (clipped_right - clipped_left) as f32,
+                    (bottom - top) as f32,
+                ) {
+                    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+                }
+            }
         }
     } else if let Some(rect) = tiny_skia::Rect::from_xywh(x, y - t / 2.0, width, t) {
         pixmap.fill_rect(rect, &paint, Transform::identity(), None);
@@ -1589,8 +1646,161 @@ fn encode_png(pixmap: &Pixmap) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
+mod raw_font_error_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_fallback_is_lazy_but_its_error_is_not_discarded() {
+        let valid = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fonts/KaTeX_Main-Regular.ttf"),
+        )
+        .unwrap();
+        let fonts = ratex_font_loader::FontSet::from(HashMap::from([
+            (FontId::MathItalic, valid),
+            (FontId::MainRegular, vec![0; 1024]),
+        ]));
+        let refs: HashMap<_, _> = fonts
+            .iter_with_source()
+            .map(|(id, bytes, source_id)| {
+                (
+                    *id,
+                    RendererFontRef {
+                        font: RendererFont::Raw(Box::new(LazyRawFont {
+                            bytes,
+                            face_index: 0,
+                            parsed: OnceCell::new(),
+                        })),
+                        source_id,
+                    },
+                )
+            })
+            .collect();
+        let mut pixmap = Pixmap::new(100, 100).unwrap();
+        let system_fonts = SystemFontResolver::new();
+        render_glyph(
+            &mut pixmap,
+            10.0,
+            50.0,
+            FontId::MathItalic,
+            'x' as u32,
+            &Color::BLACK,
+            &refs,
+            &system_fonts,
+            40.0,
+        )
+        .expect("an unused malformed fallback must not fail rendering");
+        let RendererFont::Raw(fallback) = &refs[&FontId::MainRegular].font else {
+            unreachable!()
+        };
+        assert!(fallback.parsed.get().is_none());
+        for _ in 0..2 {
+            let error = render_glyph(
+                &mut pixmap,
+                10.0,
+                50.0,
+                FontId::MathItalic,
+                0x10ffff,
+                &Color::BLACK,
+                &refs,
+                &system_fonts,
+                40.0,
+            )
+            .expect_err("missing glyph must propagate a malformed fallback's error");
+            assert!(error.contains("Main-Regular"), "{error}");
+            assert!(error.contains("InvalidFont"), "{error}");
+        }
+        assert!(matches!(fallback.parsed.get(), Some(Err(_))));
+    }
+}
+
+#[cfg(test)]
 mod glyph_mask_cache_tests {
     use super::*;
+
+    fn isolated_test_font() -> ratex_font_loader::FontSet {
+        // A fresh source ID isolates cache state from other tests without
+        // clearing process-wide caches while parallel tests are using them.
+        ratex_font_loader::FontSet::from(HashMap::from([(
+            FontId::MainRegular,
+            std::fs::read(std::path::Path::new(&font_dir()).join("KaTeX_Main-Regular.ttf"))
+                .expect("bundled test font"),
+        )]))
+    }
+
+    fn render_test_glyph(
+        fonts: &ratex_font_loader::FontSet,
+        position: (f32, f32),
+        em: f32,
+    ) -> Pixmap {
+        let (_, bytes, source_id) = fonts.iter_with_source().next().unwrap();
+        let font = FontRef::try_from_slice(bytes).unwrap();
+        let mut pixmap = Pixmap::new(160, 128).unwrap();
+        pixmap.fill(tiny_skia::Color::WHITE);
+        assert!(render_glyph_with_font(
+            &mut pixmap,
+            position.0,
+            position.1,
+            FontGlyph {
+                font_id: FontId::MainRegular,
+                font: &font,
+                source_id,
+                glyph_id: font.glyph_id('a'),
+            },
+            &Color::BLACK,
+            em,
+        ));
+        pixmap
+    }
+
+    fn assert_position_order_independent(first: (f32, f32), second: (f32, f32), em: f32) {
+        for (warmup, target) in [(first, second), (second, first)] {
+            let expected = render_test_glyph(&isolated_test_font(), target, em);
+            let fonts = isolated_test_font();
+            render_test_glyph(&fonts, warmup, em);
+            let actual = render_test_glyph(&fonts, target, em);
+            assert!(
+                expected.data() == actual.data(),
+                "warmup {warmup:?} changed glyph pixels at {target:?}, em={em}: cold bounds {:?}, warm bounds {:?}",
+                ink_bbox(&expected),
+                ink_bbox(&actual),
+            );
+        }
+    }
+
+    #[test]
+    fn integer_x_translation_keeps_cold_and_warm_pixels_identical() {
+        // At this size the left edge rounds across an integer boundary at
+        // the second position despite both origins having the same phase.
+        assert_position_order_independent((5.25, 80.25), (64.25, 80.25), 22.0588);
+    }
+
+    #[test]
+    fn integer_y_translation_keeps_cold_and_warm_pixels_identical() {
+        // Exercise the corresponding rounding boundary at the glyph's top.
+        assert_position_order_independent((64.25, 32.25), (64.25, 80.25), 22.87947);
+    }
+
+    #[test]
+    fn same_position_retains_cached_mask_and_pixels() {
+        let fonts = isolated_test_font();
+        let (_, _, source_id) = fonts.iter_with_source().next().unwrap();
+        let cached_mask = || {
+            let cache = GLYPH_MASK_CACHE.read().unwrap();
+            let mut entries = cache
+                .entries
+                .iter()
+                .filter(|(key, _)| key.source == source_id);
+            let mask = Arc::clone(entries.next().expect("glyph mask must be cached").1);
+            assert!(entries.next().is_none());
+            mask
+        };
+        let first = render_test_glyph(&fonts, (64.25, 80.25), 22.0588);
+        let mask = cached_mask();
+        let repeated = render_test_glyph(&fonts, (64.25, 80.25), 22.0588);
+        assert!(first.data() == repeated.data());
+        assert!(Arc::ptr_eq(&mask, &cached_mask()));
+    }
 
     #[test]
     fn mask_blit_matches_direct_fill_path_for_opaque_and_alpha_paint() {
@@ -1856,8 +2066,8 @@ mod glyph_mask_cache_tests {
 
     #[test]
     fn cached_glyph_at_second_position_is_not_misplaced() {
-        // Two identical glyphs at different positions: the second must come
-        // from the mask cache and still be drawn at its own position.
+        // Repeated rendering reuses each position's mask while keeping both
+        // identical glyphs at their respective positions.
         let pixmap = render("a+a");
         let (min_x, _, max_x, _) = ink_bbox(&pixmap);
         // ~20 px per glyph at font_size 40 plus spacing: both `a`s must be
@@ -1886,5 +2096,124 @@ mod glyph_mask_cache_tests {
         let pixmap = render(r"\sum_{\mathclap{1\le i\le n}} x_{i}");
         let offset = (82 * pixmap.width() as usize) * 4;
         assert_eq!(&pixmap.data()[offset..offset + 4], &[48, 48, 48, 255]);
+    }
+}
+
+#[cfg(test)]
+mod pixel_resource_tests {
+    use super::*;
+    fn list(width: f64, height: f64) -> DisplayList {
+        DisplayList {
+            width,
+            height,
+            depth: 0.0,
+            items: vec![],
+        }
+    }
+    #[test]
+    fn huge_rule_returns_an_error_before_allocation() {
+        let ast = ratex_parser::parse(r"\rule{1000em}{1000em}").unwrap();
+        let boxes = ratex_layout::layout(&ast, &ratex_layout::LayoutOptions::default());
+        let dl = ratex_layout::to_display_list(&boxes);
+        assert!(checked_pixmap_size(&dl, &RenderOptions::default())
+            .unwrap_err()
+            .contains("PNG pixel limit exceeded"));
+    }
+    #[test]
+    fn pixel_budget_boundary_and_overflow() {
+        let options = RenderOptions {
+            font_size: 1.0,
+            padding: 0.0,
+            ..RenderOptions::default()
+        };
+        assert_eq!(
+            checked_pixmap_size(&list(4096.0, 4096.0), &options).unwrap(),
+            (4096, 4096)
+        );
+        assert!(checked_pixmap_size(&list(4097.0, 4096.0), &options).is_err());
+        assert!(checked_pixmap_size(&list(f64::MAX, f64::MAX), &options).is_err());
+        assert!(checked_pixmap_size(&list(u32::MAX as f64, 1.0), &options).is_err());
+        assert_eq!(
+            checked_pixmap_size(&list(0.0, 0.0), &options).unwrap(),
+            (1, 1)
+        );
+        let dpr = RenderOptions {
+            device_pixel_ratio: 2.0,
+            ..options
+        };
+        assert!(checked_pixmap_size(&list(4096.0, 4096.0), &dpr).is_err());
+    }
+    #[test]
+    fn invalid_dimensions_and_options_are_errors() {
+        for value in [f64::NAN, f64::INFINITY, -1.0] {
+            assert!(render_to_png(&list(value, 1.0), &RenderOptions::default()).is_err());
+            assert!(render_to_png(&list(1.0, value), &RenderOptions::default()).is_err());
+        }
+        for value in [f32::NAN, f32::INFINITY, -1.0, 0.0] {
+            assert!(checked_pixmap_size(
+                &list(1.0, 1.0),
+                &RenderOptions {
+                    font_size: value,
+                    ..RenderOptions::default()
+                }
+            )
+            .is_err());
+            assert!(checked_pixmap_size(
+                &list(1.0, 1.0),
+                &RenderOptions {
+                    device_pixel_ratio: value,
+                    ..RenderOptions::default()
+                }
+            )
+            .is_err());
+        }
+        assert!(checked_pixmap_size(
+            &list(1.0, 1.0),
+            &RenderOptions {
+                padding: -1.0,
+                ..RenderOptions::default()
+            }
+        )
+        .is_err());
+    }
+}
+
+#[cfg(test)]
+mod dashed_line_tests {
+    use super::*;
+
+    fn previous_line(pixmap: &mut Pixmap, x: f32, y: f32, width: f32, thickness: f32) {
+        let t = thickness.max(1.0);
+        let paint = paint_for_color(&Color::BLACK);
+        let dash = 4.0 * t;
+        let mut cur_x = x;
+        while cur_x < x + width {
+            let segment_width = dash.min(x + width - cur_x).max(2.0);
+            if let Some(rect) = tiny_skia::Rect::from_xywh(cur_x, y - t / 2.0, segment_width, t) {
+                pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            }
+            cur_x += 2.0 * dash;
+        }
+    }
+
+    #[test]
+    fn visible_dashes_preserve_phase_and_partial_tails() {
+        for x in [-80.0, -3.5, -1.0, 0.0, 2.25, 12.0, 70.0] {
+            for width in [0.5, 4.0, 8.0, 25.0, 100.0] {
+                for thickness in [1.0, 1.5, 2.0, 3.25] {
+                    for y in [-2.0, 0.0, 4.0, 9.0] {
+                        let mut expected = Pixmap::new(64, 8).unwrap();
+                        let mut actual = Pixmap::new(64, 8).unwrap();
+                        previous_line(&mut expected, x, y, width, thickness);
+                        render_line(&mut actual, x, y, width, thickness, &Color::BLACK, true);
+                        assert_eq!(
+                            actual.data(),
+                            expected.data(),
+                            "x={x} y={y} width={width} t={thickness}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
