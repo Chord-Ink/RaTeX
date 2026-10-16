@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-10-16
+
 ### 兼容性
 
 - `LayoutOptions` 保留 v0.1.14 的字段结构，`layout(nodes, options)` 签名不变。

@@ -11,6 +11,8 @@ section.
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-10-16
+
 ### Compatibility
 
 - `LayoutOptions` keeps the v0.1.14 fields and `layout(nodes, options)` keeps its
