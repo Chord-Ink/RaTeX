@@ -1,4 +1,6 @@
-use ratex_font::{get_global_metrics, MathConstants};
+use std::collections::HashMap;
+
+use ratex_font::{get_global_metrics, FontId, MathConstants};
 use ratex_types::color::Color;
 use ratex_types::math_style::MathStyle;
 
@@ -8,6 +10,21 @@ pub struct FallbackGlyphMetrics {
     pub width: f64,
     pub height: f64,
     pub depth: f64,
+}
+
+/// Supplies metrics for glyphs the KaTeX fonts lack.
+///
+/// `size` is the multiple of the base font size the glyph is drawn at, and `font` is the face
+/// the layout box names. Answers are in em of the size the glyph is drawn at; layout applies the
+/// size to them.
+pub trait FallbackGlyphSource {
+    fn metrics(&self, ch: char, size: f64, font: FontId) -> Option<FallbackGlyphMetrics>;
+}
+
+impl FallbackGlyphSource for HashMap<char, FallbackGlyphMetrics> {
+    fn metrics(&self, ch: char, _size: f64, _font: FontId) -> Option<FallbackGlyphMetrics> {
+        self.get(&ch).copied()
+    }
 }
 
 /// Layout options passed through the layout tree.

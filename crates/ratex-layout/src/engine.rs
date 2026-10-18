@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use ratex_font::{get_char_metrics, get_global_metrics, FontId};
@@ -13,7 +14,9 @@ use crate::hbox::make_hbox;
 use crate::layout_box::{
     BoxContent, LayoutBox, PlacedBox, ProofRule, RunGlyph, VBoxChild, VBoxChildKind,
 };
-use crate::layout_options::{FallbackGlyphMetrics, LayoutOptions as PublicLayoutOptions};
+use crate::layout_options::{
+    FallbackGlyphMetrics, FallbackGlyphSource, LayoutOptions as PublicLayoutOptions,
+};
 use crate::scoped_options::ScopedOptions as LayoutOptions;
 
 use crate::katex_svg::parse_svg_path_data;
@@ -74,6 +77,20 @@ pub fn layout_with_fallback_metrics(
     metrics: Arc<HashMap<char, FallbackGlyphMetrics>>,
 ) -> LayoutBox {
     let scoped = LayoutOptions::new(options.clone()).with_fallback_metrics(metrics);
+    layout_expression(nodes, &scoped, true)
+}
+
+/// Lay out nodes asking `source` for glyphs missing from the KaTeX fonts.
+///
+/// The source gets the char, the size it is drawn at (1.0 is the base size; scripts, `\frac`
+/// parts, `\Large` and `\htmlStyle{font-size:..}` change it) and the face the glyph box names.
+/// An empty source produces the same output as [`layout`].
+pub fn layout_with_glyph_source(
+    nodes: &[ParseNode],
+    options: &PublicLayoutOptions,
+    source: Rc<dyn FallbackGlyphSource>,
+) -> LayoutBox {
+    let scoped = LayoutOptions::new(options.clone()).with_glyph_source(source);
     layout_expression(nodes, &scoped, true)
 }
 
@@ -738,12 +755,12 @@ fn missing_glyph_height_em(ch: char, m: &ratex_font::MathConstants) -> f64 {
     }
 }
 
-fn missing_glyph_metrics_fallback(ch: char, options: &LayoutOptions) -> (f64, f64, f64) {
-    if let Some(measured) = options
-        .fallback_glyph_metrics
-        .as_ref()
-        .and_then(|metrics| metrics.get(&ch))
-    {
+fn missing_glyph_metrics_fallback(
+    ch: char,
+    font_id: FontId,
+    options: &LayoutOptions,
+) -> (f64, f64, f64) {
+    if let Some(measured) = options.source_metrics(ch, font_id) {
         return (measured.width, measured.height, measured.depth);
     }
     let m = get_global_metrics(options.style.size_index());
@@ -796,7 +813,7 @@ fn layout_symbol(text: &str, mode: Mode, options: &LayoutOptions) -> LayoutBox {
         let m = get_char_metrics(font_id, metric_cp);
         let (width, height, depth) = match m {
             Some(m) => (math_glyph_advance_em(&m, mode), m.height, m.depth),
-            None => missing_glyph_metrics_fallback(ch, options),
+            None => missing_glyph_metrics_fallback(ch, font_id, options),
         };
         return LayoutBox {
             width,
@@ -822,6 +839,12 @@ fn layout_symbol(text: &str, mode: Mode, options: &LayoutOptions) -> LayoutBox {
     // chain (unicode fallback when Main has no glyph). Using `missing_glyph_metrics_fallback`
     // (0.5em wide) then clips the real fallback outline in PNG/SVG — borrow Size-font TeX metrics
     // for the box only, without switching `font_id`.
+    let wide_fallback = metrics.is_none() && missing_glyph_width_em(ch) >= 0.99;
+    let box_font = if wide_fallback {
+        FontId::CjkRegular
+    } else {
+        font_id
+    };
     let (width, height, depth) = if let Some(m) = metrics {
         (math_glyph_advance_em(&m, mode), m.height, m.depth)
     } else if mode == Mode::Math {
@@ -834,15 +857,15 @@ fn layout_symbol(text: &str, mode: Mode, options: &LayoutOptions) -> LayoutBox {
             .or_else(|| get_char_metrics(FontId::Size1Regular, char_code))
         {
             Some(m) => (math_glyph_advance_em(&m, mode), m.height, m.depth),
-            None => missing_glyph_metrics_fallback(ch, options),
+            None => missing_glyph_metrics_fallback(ch, box_font, options),
         }
     } else {
-        missing_glyph_metrics_fallback(ch, options)
+        missing_glyph_metrics_fallback(ch, box_font, options)
     };
 
     // If the glyph has no KaTeX metrics and is a wide fallback character (CJK, emoji, etc.),
     // switch font_id to CjkRegular so renderers can load it from a system Unicode font.
-    if metrics.is_none() && missing_glyph_width_em(ch) >= 0.99 {
+    if wide_fallback {
         font_id = FontId::CjkRegular;
     }
 
@@ -1536,7 +1559,10 @@ fn build_op_base(
         let metrics = get_char_metrics(font_id, char_code);
         let (width, height, depth, italic) = match metrics {
             Some(m) => (m.width, m.height, m.depth, m.italic),
-            None => (1.0, 0.75, 0.25, 0.0),
+            None => match options.source_metrics(ch, font_id) {
+                Some(g) => (g.width, g.height, g.depth, 0.0),
+                None => (1.0, 0.75, 0.25, 0.0),
+            },
         };
         let base = LayoutBox {
             // `LayoutBox::width` is the horizontal ink-safe advance consumed by
@@ -1587,7 +1613,7 @@ fn layout_op_text(name: &str, options: &LayoutOptions) -> LayoutBox {
         let metrics = get_char_metrics(FontId::MainRegular, char_code);
         let (width, height, depth) = match metrics {
             Some(m) => (m.width, m.height, m.depth),
-            None => (0.5, 0.43, 0.0),
+            None => fixed_or_source_metrics(ch, FontId::MainRegular, options),
         };
         children.push(LayoutBox {
             width,
@@ -1601,6 +1627,13 @@ fn layout_op_text(name: &str, options: &LayoutOptions) -> LayoutBox {
         });
     }
     make_hbox(children)
+}
+
+fn fixed_or_source_metrics(ch: char, font_id: FontId, options: &LayoutOptions) -> (f64, f64, f64) {
+    match options.source_metrics(ch, font_id) {
+        Some(g) => (g.width, g.height, g.depth),
+        None => (0.5, 0.43, 0.0),
+    }
 }
 
 /// Compute the vertical shift to center an op symbol on the math axis (Rule 13).
@@ -1811,7 +1844,7 @@ fn layout_operatorname(body: &[ParseNode], options: &LayoutOptions) -> LayoutBox
                 let metrics = get_char_metrics(FontId::MainRegular, char_code);
                 let (width, height, depth) = match metrics {
                     Some(m) => (m.width, m.height, m.depth),
-                    None => (0.5, 0.43, 0.0),
+                    None => fixed_or_source_metrics(ch, FontId::MainRegular, options),
                 };
                 children.push(LayoutBox {
                     width,
@@ -2201,7 +2234,10 @@ fn layout_accent(
         let accent_metrics = get_char_metrics(FontId::MainRegular, accent_code);
         let (accent_w, accent_h, accent_d) = match accent_metrics {
             Some(m) => (m.width, m.height, m.depth),
-            None => (body_box.width, 0.25, 0.0),
+            None => match options.source_metrics(accent_char, FontId::MainRegular) {
+                Some(g) => (g.width, g.height, g.depth),
+                None => (body_box.width, 0.25, 0.0),
+            },
         };
         LayoutBox {
             width: accent_w,
@@ -2994,9 +3030,11 @@ fn make_stretchy_delim(delim: &str, total_height: f64, options: &LayoutOptions) 
     let mut best_w = 0.4;
     let mut best_h = 0.7;
     let mut best_d = 0.2;
+    let mut found = false;
 
     for &font_id in &DELIM_FONT_SEQUENCE {
         if let Some(m) = get_char_metrics(font_id, char_code) {
+            found = true;
             best_font = font_id;
             best_w = m.width;
             best_h = m.height;
@@ -3004,6 +3042,13 @@ fn make_stretchy_delim(delim: &str, total_height: f64, options: &LayoutOptions) 
             if best_h + best_d >= total_height {
                 break;
             }
+        }
+    }
+    if !found {
+        if let Some(g) = options.source_metrics(ch, best_font) {
+            best_w = g.width;
+            best_h = g.height;
+            best_d = g.depth;
         }
     }
 
@@ -3064,7 +3109,10 @@ fn layout_delim_sizing(size: u8, delim: &str, options: &LayoutOptions) -> Layout
             let m = get_char_metrics(FontId::MainRegular, char_code);
             match m {
                 Some(m) => (m.width, m.height, m.depth, FontId::MainRegular),
-                None => (0.4, 0.7, 0.2, FontId::MainRegular),
+                None => match options.source_metrics(ch, FontId::MainRegular) {
+                    Some(g) => (g.width, g.height, g.depth, FontId::MainRegular),
+                    None => (0.4, 0.7, 0.2, FontId::MainRegular),
+                },
             }
         }
     };
@@ -3487,10 +3535,15 @@ fn layout_html(
         .map(|style| parse_html_style(style))
         .unwrap_or_default();
 
-    let body_options = match style.color {
+    let mut body_options = match style.color {
         Some(color) => options.with_color(color),
         None => options.clone(),
     };
+    if let Some(scale) = style.font_size_scale {
+        if (scale - 1.0).abs() >= 0.001 {
+            body_options = body_options.with_lookup_scale(scale);
+        }
+    }
     let font_id = match (style.bold, style.italic) {
         (true, true) => Some(FontId::MainBoldItalic),
         (true, false) => Some(FontId::MainBold),
@@ -3627,11 +3680,7 @@ fn layout_verb(body: &str, star: bool, options: &LayoutOptions) -> LayoutBox {
             Some(m) => (FontId::TypewriterRegular, m.width, m.height, m.depth),
             None => match get_char_metrics(FontId::MainRegular, code) {
                 Some(m) => (FontId::MainRegular, m.width, m.height, m.depth),
-                None => match options
-                    .fallback_glyph_metrics
-                    .as_ref()
-                    .and_then(|measured| measured.get(&ch))
-                {
+                None => match options.source_metrics(ch, FontId::TypewriterRegular) {
                     Some(g) => (FontId::TypewriterRegular, g.width, g.height, g.depth),
                     None => (FontId::TypewriterRegular, 0.5, metrics.x_height, 0.0),
                 },

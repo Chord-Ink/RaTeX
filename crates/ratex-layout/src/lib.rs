@@ -9,9 +9,9 @@ pub mod surd;
 pub mod to_display;
 pub mod vbox;
 
-pub use engine::{layout, layout_with_fallback_metrics};
+pub use engine::{layout, layout_with_fallback_metrics, layout_with_glyph_source};
 pub use layout_box::LayoutBox;
-pub use layout_options::{FallbackGlyphMetrics, LayoutOptions};
+pub use layout_options::{FallbackGlyphMetrics, FallbackGlyphSource, LayoutOptions};
 pub use resource_limits::{validate_layout, MAX_LAYOUT_OUTPUT_ITEMS};
 pub use to_display::to_display_list;
 
