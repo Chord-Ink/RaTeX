@@ -3627,7 +3627,14 @@ fn layout_verb(body: &str, star: bool, options: &LayoutOptions) -> LayoutBox {
             Some(m) => (FontId::TypewriterRegular, m.width, m.height, m.depth),
             None => match get_char_metrics(FontId::MainRegular, code) {
                 Some(m) => (FontId::MainRegular, m.width, m.height, m.depth),
-                None => (FontId::TypewriterRegular, 0.5, metrics.x_height, 0.0),
+                None => match options
+                    .fallback_glyph_metrics
+                    .as_ref()
+                    .and_then(|measured| measured.get(&ch))
+                {
+                    Some(g) => (FontId::TypewriterRegular, g.width, g.height, g.depth),
+                    None => (FontId::TypewriterRegular, 0.5, metrics.x_height, 0.0),
+                },
             },
         };
         children.push(LayoutBox {

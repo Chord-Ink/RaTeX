@@ -164,3 +164,19 @@ fn separate_calls_do_not_retain_metrics_or_change_legacy_output() {
         measured
     );
 }
+
+#[test]
+fn measured_metrics_reach_verbatim_text() {
+    let options = LayoutOptions::default();
+    let ast = parse(r"\verb|ш|").unwrap();
+    assert!((layout(&ast, &options).width - 0.5).abs() < 1e-9);
+    let measured = layout_with_fallback_metrics(&ast, &options, metrics());
+    assert!((measured.width - 0.82).abs() < 1e-9);
+    assert!((measured.height - 0.53).abs() < 1e-9);
+    assert!((measured.depth - 0.12).abs() < 1e-9);
+    let plain = parse(r"\verb|x|").unwrap();
+    assert_eq!(
+        layout_with_fallback_metrics(&plain, &options, metrics()).width,
+        layout(&plain, &options).width
+    );
+}
