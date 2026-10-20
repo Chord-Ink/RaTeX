@@ -6,6 +6,7 @@ pub mod color;
 pub mod cr;
 pub mod def;
 pub mod delimsizing;
+pub(crate) mod editor;
 pub mod enclose;
 pub mod environment;
 pub mod font;

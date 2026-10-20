@@ -1,3 +1,4 @@
+pub mod editor;
 use crate::expansion_budget::{Cost, ExpansionBudget};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};

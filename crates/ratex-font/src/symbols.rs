@@ -136,6 +136,18 @@ fn entry_to_info(idx: usize, mode: Mode) -> SymbolInfo {
     }
 }
 
+/// Enumerate registered names in table order, keeping both modes and aliases.
+/// Unicode fallback spellings are resolved by `get_symbol` rather than added here.
+pub fn symbols() -> impl Iterator<Item = SymbolInfo> {
+    symbols_data::SYMBOLS
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let mode = if entry.1 == 0 { Mode::Math } else { Mode::Text };
+            entry_to_info(index, mode)
+        })
+}
+
 /// Look up a symbol by name in a given mode. O(1) via HashMap.
 ///
 /// When `name` is a single Unicode character, this also tries codepoint lookup,
@@ -204,6 +216,25 @@ pub fn get_symbol_render_spec(name: &str, mode: Mode) -> Option<SymbolRenderSpec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn symbol_entries_keep_names_modes_and_glyphs() {
+        let alpha = symbols()
+            .find(|s| s.name == r"\alpha" && s.mode == Mode::Math)
+            .unwrap();
+        assert_eq!(alpha.codepoint, Some('α'));
+        assert_eq!(alpha.group, Group::MathOrd);
+        let spaces: Vec<_> = symbols().filter(|s| s.name == r"\ ").collect();
+        assert_eq!(spaces.len(), 2);
+        assert!(spaces.iter().any(|s| s.mode == Mode::Math));
+        assert!(spaces.iter().any(|s| s.mode == Mode::Text));
+        for symbol in symbols() {
+            let found = get_symbol(symbol.name, symbol.mode).unwrap();
+            assert_eq!(found.name, symbol.name);
+            assert_eq!(found.codepoint, symbol.codepoint);
+            assert_eq!(found.group, symbol.group);
+        }
+    }
 
     #[test]
     fn test_get_equiv() {

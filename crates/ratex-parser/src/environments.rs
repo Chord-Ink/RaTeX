@@ -1,3 +1,4 @@
+pub(crate) mod editor;
 use std::collections::HashMap;
 
 use ratex_lexer::token::Token;

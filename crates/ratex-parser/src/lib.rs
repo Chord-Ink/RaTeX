@@ -1,3 +1,4 @@
+pub mod editor;
 pub mod environments;
 pub mod error;
 pub(crate) mod expansion_budget;
